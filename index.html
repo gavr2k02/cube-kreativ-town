@@ -1,0 +1,1362 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Куб в Креатив-Тауне</title>
+<style>
+  :root { --bg:#0d1017; --panel:#151a24; --line:#262e3d; --text:#e6e9ef; --muted:#8a93a6; --accent:#3ad1ff; }
+  * { box-sizing: border-box; }
+  html, body { margin:0; height:100%; background:var(--bg); color:var(--text); font:13px/1.4 system-ui, -apple-system, sans-serif; }
+  body { display:flex; overflow:hidden; }
+  #view { flex:1; position:relative; min-width:0; }
+  #view canvas { display:block; }
+  #hud { position:absolute; left:12px; top:12px; padding:6px 10px; border-radius:6px; background:rgba(0,0,0,.55); font-size:12px; pointer-events:none; }
+  #panel { width:340px; flex:none; background:var(--panel); border-left:1px solid var(--line); padding:14px 16px; overflow-y:auto; }
+  h1 { font-size:15px; margin:0 0 12px; }
+  h2 { font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); margin:18px 0 8px; font-weight:600; }
+  .row { display:flex; gap:6px; flex-wrap:wrap; }
+  button, .file { background:#1f2633; color:var(--text); border:1px solid var(--line); border-radius:6px; padding:6px 10px; font:inherit; cursor:pointer; }
+  button:hover, .file:hover { border-color:#3a4558; }
+  button:disabled { opacity:.45; cursor:default; }
+  button.on { background:var(--accent); color:#04121a; border-color:var(--accent); font-weight:600; }
+  .file input { display:none; }
+  .note { color:var(--muted); font-size:12px; margin:6px 0 0; }
+  #status { color:var(--accent); min-height:1.4em; }
+  @media (max-width: 760px) {
+    body { flex-direction:column; }
+    #view { flex:none; height:55vh; }
+    #panel { width:auto; border-left:0; border-top:1px solid var(--line); flex:1; }
+  }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<div id="view"><div id="hud"></div></div>
+<aside id="panel">
+  <h1>LED-куб · Креатив-Таун</h1>
+
+  <h2>Ролик</h2>
+  <div class="row" id="clipBtns"></div>
+  <p class="note">Объём рассчитан на точку «Терраса у кофейни». Сзади, от павильона, куб показывает ту же сцену, построенную под эту сторону.</p>
+
+  <h2>Мир</h2>
+  <div class="row">
+    <button id="envPlaza" class="on">На площади</button>
+    <button id="envEmpty">Только куб</button>
+  </div>
+
+  <h2>Камера</h2>
+  <div class="row" id="viewBtns"></div>
+  <div class="row" style="margin-top:6px">
+    <button id="camFree" class="on">Свободно</button>
+  </div>
+  <p class="note">Мышь: вращать / колесо: зум / правая кнопка: сдвиг.</p>
+
+  <h2>Освещение</h2>
+  <div class="row">
+    <button id="night" class="on">Ночь</button>
+    <button id="day">День</button>
+  </div>
+
+  <!-- tools for making clips (plates, raw videos, test pattern); shown with ?dev, used by the scripts in tools/ -->
+  <div id="dev" hidden>
+  <h2>Видео</h2>
+  <div class="row">
+    <label class="file">Загрузить видео…<input id="fileIn" type="file" accept="video/*"></label>
+    <button id="patternBtn">Таблица граней</button>
+  </div>
+  <div class="row" style="margin-top:6px">
+    <button class="demoBtn" data-scene="pumpkin">Тыква</button>
+    <button class="demoBtn" data-scene="keyboard">Клавиатура</button>
+    <button class="demoBtn" data-scene="wave">Волна</button>
+  </div>
+  <p class="note" id="formatNote"></p>
+  <div id="status" class="note"></div>
+
+  <h2>Обычное видео → куб</h2>
+  <p class="note">Иллюзия строится для основной точки — «Терраса у кофейни». Второй ролик, снятый для точки «Сзади, у павильона», ложится на три задние грани.</p>
+  <label class="file">Видео для обратной стороны…<input id="backIn" type="file" accept="video/*"></label>
+  <div id="backStatus" class="note"></div>
+  <select id="heroSel" hidden></select>
+  <div class="row" style="margin-top:6px">
+    <button id="plateBtn">Подложка для нейросети</button>
+    <button id="recBtn">Записать для куба</button>
+  </div>
+  <p class="note">Видео 16:9, снятое по подложке этой точки, проецируется на грани её камерой: с этой точки — объём; на остальные грани картинка ложится повёрнутой на 120° — с двух других точек совпадает верх комнаты, низ частично.</p>
+
+  </div>
+</aside>
+
+<script type="module">
+import * as THREE from 'three';
+const DEV = new URLSearchParams(location.search).has('dev');
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { LAYOUT, buildPlaza, cubeQuaternion } from './plaza.js';
+import { STRIP, slotOf, faceToSlot } from './strip-layout.js';
+import * as pumpkinScene from './scenes/pumpkin.js';
+import * as keyboardScene from './scenes/keyboard.js';
+
+// Story scenes (the brief's screensavers) live in their own modules: build(group, ctx), update(state, t), LOOP, WALL
+const STORY = { pumpkin: pumpkinScene, keyboard: keyboardScene };
+const loopLen = () => STORY[P.scene]?.LOOP ?? P.loop;
+
+// ---------- parameters & geometry shared by bake and display ----------
+// The real cube as on the photos: on one vertex (mount 'vertex'; 'face' — a cube on a plinth — is kept in the code
+// only). plinth is the height of the lowest point: here the lower vertex. 640 px faces: the real strip is 3840×640.
+// The demo (wave scene, live corners per viewpoint) only fills the cube until a video is loaded.
+const P = { scene: 'pumpkin', style: 'design', mount: 'vertex', env: 'plaza', size: LAYOUT.cube.edge, plinth: LAYOUT.cube.lift,
+  yaw: LAYOUT.cube.yaw, faceRes: 640, loop: 10,
+  hero: 0 };          // viewpoint an ordinary (flat) video is made for
+// ?yaw=… overrides the cube's turn about the vertical (handy for matching photos)
+if (new URLSearchParams(location.search).has('yaw')) P.yaw = +new URLSearchParams(location.search).get('yaw');
+const $ = id => document.getElementById(id);
+
+const isVertex = () => P.mount === 'vertex';
+function cubeQuat() {
+  // the same orientation as on the plaza model: main face ("перед") is a lower face, turned by P.yaw
+  return isVertex() ? cubeQuaternion(P.yaw) : new THREE.Quaternion();
+}
+const cubeCenter = () => new THREE.Vector3(0, P.plinth + P.size * (isVertex() ? Math.sqrt(3) : 1) / 2, 0);
+// how far the cube reaches out horizontally from its axis
+const cubeReach = () => P.size * (isVertex() ? Math.sqrt(2 / 3) : Math.SQRT1_2);
+const faceCount = () => (isVertex() ? 6 : 5);
+const FACE_NAMES = ['перед', 'право', 'зад', 'лево', 'верх', 'низ'];
+// Viewpoints where people stand (the plaza's list, relative to the cube); the first one is the main one
+const VIEWPOINTS = LAYOUT.viewpoints.map(v => ({ label: v.label,
+  eye: new THREE.Vector3(v.x - LAYOUT.cube.x, v.y ?? 1.7, v.z - LAYOUT.cube.z) }));
+const sweetSpot = () => VIEWPOINTS[0].eye.clone();
+// Each face, in cube-local axes: origin = bottom-left corner as seen from outside, u = rightwards, w = upwards
+// (the bottom face is seen from below with x to the right and the front edge at the top). A cube on a vertex
+// shows all six faces, one on a plinth hides the bottom. Strip order matches the bake and the display UVs.
+function faceDefs() {
+  const s = P.size / 2, S = P.size, c = cubeCenter(), q = cubeQuat(), v = (x, y, z) => new THREE.Vector3(x, y, z);
+  return [
+    { o: v(-s, -s,  s), u: v( S, 0, 0), w: v(0, S, 0) }, // front  +z
+    { o: v( s, -s,  s), u: v(0, 0, -S), w: v(0, S, 0) }, // right  +x
+    { o: v( s, -s, -s), u: v(-S, 0, 0), w: v(0, S, 0) }, // back   -z
+    { o: v(-s, -s, -s), u: v(0, 0,  S), w: v(0, S, 0) }, // left   -x
+    { o: v(-s,  s,  s), u: v( S, 0, 0), w: v(0, 0, -S) }, // top   +y
+    { o: v(-s, -s, -s), u: v( S, 0, 0), w: v(0, 0,  S) }, // bottom -y
+  ].slice(0, faceCount()).map(f => {
+    f.o.applyQuaternion(q).add(c); f.u.applyQuaternion(q); f.w.applyQuaternion(q);
+    f.n = new THREE.Vector3().crossVectors(f.u, f.w).normalize();
+    return f;
+  });
+}
+
+// ---------- bake renderer: content scene -> sweet-spot projection -> unfolded strip ----------
+const stripCanvas = document.createElement('canvas'); // the unfolded strip the demo is baked into
+const bakeR = new THREE.WebGLRenderer({ canvas: stripCanvas, preserveDrawingBuffer: true });
+bakeR.setPixelRatio(1);
+bakeR.shadowMap.enabled = true;
+bakeR.shadowMap.type = THREE.PCFSoftShadowMap;
+bakeR.toneMapping = THREE.ACESFilmicToneMapping;
+bakeR.localClippingEnabled = true; // water inside a tilted cube is clipped by the cube planes
+
+// One render target per viewpoint in use; every face is projected from the viewpoint assigned to it
+const rtPool = [];
+const getRT = i => rtPool[i] ??= new THREE.WebGLRenderTarget(2048, 2048, { samples: 4, type: THREE.HalfFloatType });
+const content = new THREE.Scene();
+content.background = new THREE.Color(0x000000);
+content.environment = new THREE.PMREMGenerator(bakeR).fromScene(new RoomEnvironment(), 0.04).texture;
+content.environmentIntensity = 0.25;
+
+// Renders one face segment (into its viewport of the strip): face texel -> world point -> view projection -> content
+const bakeMat = new THREE.ShaderMaterial({
+  uniforms: {
+    tContent: { value: null }, uVP: { value: new THREE.Matrix4() }, uEye: { value: new THREE.Vector3() }, uHasView: { value: 0 },
+    uSeam: { value: new THREE.Vector4() }, // fade flags for left, right, bottom, top edges of the segment
+    uFadeColor: { value: new THREE.Color(0x000000) }, // what seams fade to: black, or the scene's wall colour
+    uFadeWidth: { value: 0.3 },                       // how far into the face the fade reaches
+    uURange: { value: new THREE.Vector2(0, 1) }, // which part of the face (along u) this draw covers
+    uRot: { value: 0 }, uFlip: { value: 0 },   // the controller's turn / mirror of this face inside its strip slot
+    uRaw: { value: 0 },        // 1: the source is already a display image (a video) — no tone mapping
+    uSolidEmpty: { value: 0 }, // 1: texels no camera covers take uFadeColor instead of the placeholder grid
+    uO: { value: new THREE.Vector3() }, uU: { value: new THREE.Vector3() }, uW: { value: new THREE.Vector3() }, uN: { value: new THREE.Vector3() },
+  },
+  vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }`,
+  fragmentShader: `
+    uniform sampler2D tContent; uniform mat4 uVP; uniform vec3 uEye; uniform float uHasView; uniform vec4 uSeam; uniform vec2 uURange; uniform vec3 uFadeColor; uniform float uFadeWidth;
+    uniform float uRot, uFlip, uRaw, uSolidEmpty;
+    uniform vec3 uO; uniform vec3 uU; uniform vec3 uW; uniform vec3 uN;
+    varying vec2 vUv;
+    void main(){
+      // strip-slot coords → face picture coords: undo the controller's turn, then its mirror
+      vec2 fv = vUv;
+      for (int k = 0; k < 3; k++) if (float(k) < uRot) fv = vec2(fv.y, 1.0 - fv.x);
+      if (uFlip > 0.5) fv.x = 1.0 - fv.x;
+      float fu = mix(uURange.x, uURange.y, fv.x);
+      vec3 p = uO + fu * uU + fv.y * uW;
+      vec4 clip = uVP * vec4(p, 1.0);
+      vec2 suv = clip.xy / clip.w * 0.5 + 0.5;
+      bool vis = uHasView > 0.5 && dot(uN, uEye - p) > 0.0 && clip.w > 0.0
+              && all(greaterThanEqual(suv, vec2(0.0))) && all(lessThanEqual(suv, vec2(1.0)));
+      vec3 col;
+      if (vis) col = texture2D(tContent, suv).rgb;
+      else if (uSolidEmpty > 0.5) col = uFadeColor;
+      else {
+        // no viewpoint covers this texel: dim placeholder grid
+        vec2 g = fract(vec2(fu, fv.y) * 8.0);
+        col = vec3(0.003, 0.005, 0.01) + step(0.97, max(g.x, g.y)) * vec3(0.01, 0.025, 0.05);
+      }
+      // seam edges (neighbour face drawn for another viewpoint) fade to black so the mismatch is hidden
+      float W = uFadeWidth;
+      float e = 1.0;
+      if (uSeam.x > 0.5) e *= smoothstep(0.0, W, fv.x);
+      if (uSeam.y > 0.5) e *= smoothstep(0.0, W, 1.0 - fv.x);
+      if (uSeam.z > 0.5) e *= smoothstep(0.0, W, fv.y);
+      if (uSeam.w > 0.5) e *= smoothstep(0.0, W, 1.0 - fv.y);
+      col = mix(uFadeColor, col, e);
+      gl_FragColor = vec4(col, 1.0);
+      if (uRaw < 0.5) {
+        #include <tonemapping_fragment>
+      }
+      #include <colorspace_fragment>
+    }`,
+});
+const bakeScene = new THREE.Scene();
+bakeScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), bakeMat));
+const bakeCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+
+// Grid texture for the virtual inner room walls
+function gridTexture() {
+  const c = document.createElement('canvas'); c.width = c.height = 512;
+  const g = c.getContext('2d');
+  g.fillStyle = '#000'; g.fillRect(0, 0, 512, 512);
+  g.strokeStyle = '#3ad1ff'; g.lineWidth = 2;
+  for (let i = 0; i <= 8; i++) { const x = i * 64; g.beginPath(); g.moveTo(x, 0); g.lineTo(x, 512); g.moveTo(0, x); g.lineTo(512, x); g.stroke(); }
+  g.lineWidth = 10; g.strokeRect(0, 0, 512, 512);
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8;
+  return t;
+}
+const gridTex = gridTexture();
+
+// Demo styles:
+//  corners4 — every side face is split in halves, each cube corner gets its own viewpoint and hero;
+//  design   — whole faces, two live corners (main + opposite), each with its own hero;
+//  simple   — whole faces, one ball roaming the whole room (shows the seam problem).
+const splits = () => P.style === 'corners4' && !isVertex() ? 2 : 1; // half-faces only for a cube on a plinth
+const fadeSeams = () => P.style !== 'simple';
+
+let demo = null;
+const demoFade = new THREE.Color(); // what the demo's seams fade to (the flat-video bake uses its own backdrop)
+function buildContent() {
+  if (demo) { content.remove(demo.group); demo.group.traverse(o => { o.geometry?.dispose(); o.material?.dispose?.(); if (o.isLight || o.isInstancedMesh) o.dispose(); }); }
+  const S = P.size, s = S / 2, group = new THREE.Group();
+  group.position.copy(cubeCenter());
+
+  // Hollow room behind the LED surfaces: only the far inner walls are drawn (BackSide)
+  const room = new THREE.Mesh(new THREE.BoxGeometry(S, S, S),
+    new THREE.MeshStandardMaterial({ color: 0x0b0e16, roughness: 0.85, side: THREE.BackSide,
+      emissive: 0xffffff, emissiveMap: gridTex, emissiveIntensity: 0.9 }));
+  room.receiveShadow = true;
+  room.quaternion.copy(cubeQuat());
+  group.add(room);
+
+  const story = STORY[P.scene];
+  demoFade.set(story ? story.WALL : 0x010102);
+  bakeMat.uniforms.uFadeWidth.value = story ? 0.12 : 0.3;
+  if (story) {
+    // an unlit wall in the scene's background colour: a seamless studio backdrop (seams fade into exactly this
+    // colour), instead of the grid; the scene brings its own light for its objects
+    room.material.dispose();
+    room.material = new THREE.MeshBasicMaterial({ color: story.WALL, side: THREE.BackSide });
+    content.add(group);
+    const c = cubeCenter();
+    demo = { group, state: story.build(group, { S, quat: cubeQuat(), viewpoints: VIEWPOINTS.map(v => v.eye.clone().sub(c)) }) };
+    return;
+  }
+
+  const light = new THREE.PointLight(0xfff2e0, 4 * S * S, 0, 2);
+  light.position.set(0, s * 0.85, 0);
+  light.castShadow = true; light.shadow.mapSize.set(1024, 1024); light.shadow.bias = -0.002;
+  group.add(light, new THREE.AmbientLight(0x8090b0, 0.25));
+
+  const orbiter = (color, parent = group) => {
+    const m = new THREE.Mesh(new THREE.BoxGeometry(S * 0.07, S * 0.07, S * 0.07),
+      new THREE.MeshStandardMaterial({ color, roughness: 0.3, metalness: 0.3 }));
+    m.castShadow = true; parent.add(m); return m;
+  };
+  content.add(group);
+
+  if (P.scene === 'wave') { demo = buildWave(group); return; }
+
+  if (P.style === 'simple') {
+    const R = S * 0.16;
+    const ball = new THREE.Mesh(new THREE.SphereGeometry(R, 64, 32),
+      new THREE.MeshPhysicalMaterial({ color: 0xff3d7f, roughness: 0.15, metalness: 0.1, clearcoat: 1 }));
+    // the simple demo moves in the room's own axes, so it stays inside a tilted cube too
+    const roomFrame = new THREE.Group();
+    roomFrame.quaternion.copy(cubeQuat()); group.add(roomFrame);
+    ball.castShadow = true; roomFrame.add(ball);
+    const orbiters = Array.from({ length: 10 }, (_, i) => orbiter(new THREE.Color().setHSL(i / 10, 0.8, 0.55), roomFrame));
+    // Pop-out target: in front of the cube along the line to the viewer (in room axes)
+    const popTarget = sweetSpot().sub(cubeCenter()).normalize().multiplyScalar(s * 1.2 + S * 0.25).applyQuaternion(cubeQuat().invert());
+    demo = { group, ball, orbiters, popTarget, R };
+    return;
+  }
+
+  // One hero per ground viewpoint. It lives where its viewpoint owns the face area: at the corner shared by
+  // two owned faces/halves, or in the middle of a single owned face — so it never lands on a faded seam.
+  const hs = splits() === 2 ? 0.7 : 1;            // heroes get smaller when a corner owns only half-faces
+  const depth = s * (splits() === 2 ? 0.7 : 0.55); // how far from the centre the hero's home is
+  const kinds = [
+    { geo: () => new THREE.SphereGeometry(S * 0.16 * hs, 64, 32), mat: { color: 0xff3d7f, metalness: 0.1, roughness: 0.15 } },
+    { geo: () => new THREE.TorusKnotGeometry(S * 0.12 * hs, S * 0.035 * hs, 160, 24), mat: { color: 0xffc040, metalness: 0.9, roughness: 0.2 } },
+    { geo: () => new THREE.IcosahedronGeometry(S * 0.15 * hs, 0), mat: { color: 0x30e0ff, metalness: 0.3, roughness: 0.25, flatShading: true } },
+    { geo: () => new THREE.TorusGeometry(S * 0.12 * hs, S * 0.045 * hs, 32, 96), mat: { color: 0x7dff6a, metalness: 0.5, roughness: 0.2 } },
+  ];
+  const ground = viewHomes();
+  const popLen = 0.25;
+  const heroes = ground.map(({ v, dir }, h) => {
+    const anchor = dir.clone().multiplyScalar(depth);
+    const kind = kinds[h % kinds.length];
+    const mesh = new THREE.Mesh(kind.geo(), new THREE.MeshPhysicalMaterial({ ...kind.mat, clearcoat: 1 }));
+    mesh.castShadow = true; group.add(mesh);
+    // Pop straight along the anchor → viewer line: from that viewer the hero grows in place, staying on its faces
+    // Bounding radius at peak scale, so the bounce stays above the floor and the pop stops short of the viewer
+    mesh.geometry.computeBoundingSphere();
+    const radius = mesh.geometry.boundingSphere.radius;
+    const toViewer = v.eye.clone().sub(cubeCenter()).sub(anchor);
+    const popLenM = Math.max(0, Math.min(S * 0.75 * hs, toViewer.length() - radius * 1.3 - 1));
+    const pop = anchor.clone().addScaledVector(toViewer.normalize(), popLenM);
+    // orbit radius limited by the distance from the anchor to the nearest wall (minus a cube's half-diagonal)
+    // (a tilted cube is bounded by its inscribed sphere instead of axis-aligned walls)
+    const wall = isVertex() ? s - anchor.length() : s - Math.max(Math.abs(anchor.x), Math.abs(anchor.z));
+    const orbitR = Math.max(0.05 * S, Math.min(0.24 * S * hs, wall - 0.065 * S));
+    const color = new THREE.Color(kind.mat.color);
+    const orbiters = Array.from({ length: splits() === 2 ? 2 : 4 }, (_, j) => orbiter(color.clone().offsetHSL(j * 0.06, 0, 0.1)));
+    return { mesh, radius, anchor, pop, orbitR, orbiters, side: new THREE.Vector3(-dir.z, 0, dir.x), start: (0.55 + h / ground.length) % 1 };
+  });
+  demo = { group, heroes, hs, popLen };
+}
+
+// Corner "homes": one per ground viewpoint, in the direction of the face area that viewpoint owns
+function viewHomes() {
+  return views.map((v, i) => ({ v, i })).filter(x => x.v.ground).map(({ v, i }) => {
+    const dir = new THREE.Vector3();
+    segs.forEach(sg => { if ((isVertex() || sg.face < 4) && sg.view === i) dir.addScaledVector(faces[sg.face].n, sg.u1 - sg.u0); });
+    dir.y = 0;
+    return { v, dir: dir.normalize() };
+  });
+}
+
+// ---------- scene "wave": water sloshing in the box, a surge at every live corner throws spray at its viewer ----------
+const WATER_N = 96; // surface grid resolution
+const WATER_BASE_TILTED = -0.12; // mean water level in a cube on a vertex, × edge, relative to the centre
+function boxWater(group) {
+  const S = P.size, s = S / 2 * 0.995, N = WATER_N, row = N + 1;
+  // Closed water volume: displaced top grid + four side walls down to the floor (their top edge follows the surface)
+  const top = row * row, sideVerts = 4 * row * 2;
+  const pos = new Float32Array((top + sideVerts) * 3);
+  const idx = [];
+  for (let j = 0; j <= N; j++) for (let i = 0; i <= N; i++) {
+    const k = (j * row + i) * 3;
+    pos[k] = -s + 2 * s * i / N; pos[k + 2] = -s + 2 * s * j / N;
+  }
+  for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
+    const a = j * row + i, b = a + 1, c = a + row, d = c + 1;
+    idx.push(a, c, b, b, c, d);
+  }
+  // edges as lists of top-vertex indices; side vertex pairs (copy of top, bottom) follow them
+  const edges = [
+    Array.from({ length: row }, (_, i) => N * row + i),   // front (z = +s)
+    Array.from({ length: row }, (_, j) => j * row + N),   // right (x = +s)
+    Array.from({ length: row }, (_, i) => i),             // back  (z = -s)
+    Array.from({ length: row }, (_, j) => j * row),       // left  (x = -s)
+  ];
+  const sideTop = [];
+  edges.forEach((e, ei) => e.forEach((ti, m) => {
+    const vt = top + (ei * row + m) * 2, vb = vt + 1;
+    for (const v of [vt, vb]) { pos[v * 3] = pos[ti * 3]; pos[v * 3 + 2] = pos[ti * 3 + 2]; }
+    pos[vb * 3 + 1] = -s;
+    sideTop.push([vt, ti]);
+    if (m < N) idx.push(vt, vb, vt + 2, vt + 2, vb, vb + 2);
+  }));
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geo.setIndex(idx);
+  const water = new THREE.Mesh(geo, new THREE.MeshPhysicalMaterial({
+    color: 0x1f8fe0, roughness: 0.06, metalness: 0, clearcoat: 1, transparent: true, opacity: 0.62,
+    side: THREE.DoubleSide, depthWrite: false, emissive: 0x05304f, emissiveIntensity: 0.6 }));
+  group.add(water);
+  return { water, sideTop };
+}
+
+// On a vertex the room is tilted: the water is a horizontal surface clipped by the six cube planes, and the far
+// walls below the waterline get a blue tint from a copy of the room clipped at the mean water level
+function tiltedWater(group) {
+  const S = P.size, c = cubeCenter();
+  const geo = new THREE.PlaneGeometry(S * 1.8, S * 1.8, WATER_N, WATER_N);
+  geo.rotateX(-Math.PI / 2);
+  const inside = faces.map(f => new THREE.Plane(f.n.clone().negate(), S / 2 * 0.995 + f.n.dot(c)));
+  const water = new THREE.Mesh(geo, new THREE.MeshPhysicalMaterial({
+    color: 0x1f8fe0, roughness: 0.06, metalness: 0, clearcoat: 1, transparent: true, opacity: 0.62,
+    side: THREE.DoubleSide, depthWrite: false, emissive: 0x05304f, emissiveIntensity: 0.6, clippingPlanes: inside }));
+  group.add(water);
+  const tint = new THREE.Mesh(new THREE.BoxGeometry(S * 0.99, S * 0.99, S * 0.99), new THREE.MeshBasicMaterial({
+    color: 0x0d5a9a, transparent: true, opacity: 0.55, side: THREE.BackSide, depthWrite: false,
+    clippingPlanes: [new THREE.Plane(new THREE.Vector3(0, -1, 0), c.y + WATER_BASE_TILTED * S)] }));
+  tint.quaternion.copy(cubeQuat());
+  group.add(tint);
+  return { water, sideTop: [] };
+}
+
+function buildWave(group) {
+  const S = P.size;
+  const { water, sideTop } = isVertex() ? tiltedWater(group) : boxWater(group);
+
+  const homes = viewHomes().map((h, n, all) => {
+    // surge sits close to the corner (or face middle) the viewpoint owns
+    const anchor = h.dir.clone().multiplyScalar(S / 2 * (splits() === 2 ? 0.62 : 0.5));
+    const toViewer = h.v.eye.clone().sub(cubeCenter()).sub(anchor).setY(0).normalize();
+    return { anchor, toViewer, eyeLocal: h.v.eye.clone().sub(cubeCenter()), forward: cubeCenter().sub(h.v.eye).normalize(), start: (0.5 + n / all.length) % 1 };
+  });
+
+  // Spray: small droplets launched from each surge towards its viewer
+  const perHome = 36;
+  const drops = new THREE.InstancedMesh(new THREE.SphereGeometry(S * 0.018, 12, 8),
+    new THREE.MeshPhysicalMaterial({ color: 0x9fdcff, roughness: 0.05, clearcoat: 1, emissive: 0x0a3c66, emissiveIntensity: 0.8 }),
+    Math.max(1, homes.length * perHome));
+  drops.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  drops.frustumCulled = false;
+  group.add(drops);
+  // deterministic per-droplet randoms so the loop is identical on every pass and in the recording
+  const rand = i => { const x = Math.sin(i * 127.1 + 311.7) * 43758.5453; return x - Math.floor(x); };
+  const dropParams = Array.from({ length: homes.length * perHome }, (_, i) =>
+    ({ home: Math.floor(i / perHome), at: 0.08 + 0.1 * rand(i), speed: 0.9 + 0.8 * rand(i + 1000),
+       up: 1.0 + 1.0 * rand(i + 2000), lateral: (rand(i + 3000) - 0.5) * 0.9 }));
+
+  // Buoys bobbing on the surface
+  const buoys = homes.flatMap((h, n) => [0, 1].map(j => {
+    const m = new THREE.Mesh(new THREE.BoxGeometry(S * 0.06, S * 0.06, S * 0.06),
+      new THREE.MeshStandardMaterial({ color: new THREE.Color().setHSL((n * 0.27 + j * 0.1) % 1, 0.85, 0.55), roughness: 0.35 }));
+    m.castShadow = true; group.add(m);
+    const side = new THREE.Vector3(-h.anchor.z, 0, h.anchor.x).normalize();
+    return { m, base: h.anchor.clone().multiplyScalar(0.55).addScaledVector(side, (j ? 1 : -1) * S * 0.12) };
+  }));
+
+  return { group, water, sideTop, homes, drops, dropParams, buoys };
+}
+
+function waveHeight(x, z, t) {
+  const S = P.size, s = S / 2, w = 2 * Math.PI / P.loop, phase = t / P.loop, d = demo;
+  const k = 2 * Math.PI / S;
+  // integer multiples of the loop frequency keep the animation seamless
+  let y = (isVertex() ? WATER_BASE_TILTED * S : -s + 0.42 * S)
+    + 0.035 * S * Math.sin(k * 1.3 * x + k * 0.7 * z - 3 * w * t)
+    + 0.025 * S * Math.sin(-k * 0.6 * x + k * 1.7 * z - 4 * w * t)
+    + 0.012 * S * Math.sin(k * 3.1 * x - k * 2.3 * z - 7 * w * t);
+  // slow slosh along the main diagonal
+  const md = d.homes[0] ? d.homes[0].anchor : new THREE.Vector3(1, 0, 1);
+  const ml = Math.hypot(md.x, md.z) || 1;
+  y += 0.06 * S * Math.sin(w * t) * (x * md.x + z * md.z) / (ml * s);
+  // surges at the live corners
+  for (const h of d.homes) {
+    const b = bump(phase, h.start, 0.22);
+    if (b < 1e-3) continue;
+    const r2 = ((x - h.anchor.x) ** 2 + (z - h.anchor.z) ** 2) / (0.22 * S) ** 2;
+    y += 0.34 * S * b * Math.exp(-r2);
+  }
+  return Math.min(y, isVertex() ? 0.42 * S : s * 0.97);
+}
+
+function updateWave(t) {
+  const S = P.size, s = S / 2, phase = t / P.loop, d = demo;
+  const pos = d.water.geometry.attributes.position, arr = pos.array, row = WATER_N + 1;
+  for (let v = 0; v < row * row; v++) arr[v * 3 + 1] = waveHeight(arr[v * 3], arr[v * 3 + 2], t);
+  for (const [vt, ti] of d.sideTop) arr[vt * 3 + 1] = arr[ti * 3 + 1];
+  pos.needsUpdate = true;
+  d.water.geometry.computeVertexNormals();
+
+  const g = 9.8 * S / 4, m = new THREE.Matrix4(), q = new THREE.Quaternion(), p = new THREE.Vector3(), sc = new THREE.Vector3();
+  d.dropParams.forEach((dp, i) => {
+    const h = d.homes[dp.home];
+    const tau = ((((phase - h.start - dp.at) % 1) + 1) % 1) * P.loop; // seconds since this droplet's launch
+    const life = 1.3;
+    if (tau > life) { m.makeScale(0, 0, 0); d.drops.setMatrixAt(i, m); return; }
+    const side = new THREE.Vector3(-h.toViewer.z, 0, h.toViewer.x);
+    const v = h.toViewer.clone().multiplyScalar(dp.speed * S / 4 * 1.6).addScaledVector(side, dp.lateral * S / 4).setY(dp.up * S / 4 * 2.2);
+    p.copy(h.anchor).setY(waveHeight(h.anchor.x, h.anchor.z, t - tau)).addScaledVector(v, tau);
+    p.y -= 0.5 * g * tau * tau;
+    // a drop near or past its viewer's camera plane would render behind that bake camera — hide it
+    if (p.clone().sub(h.eyeLocal).dot(h.forward) < 1.5) { m.makeScale(0, 0, 0); d.drops.setMatrixAt(i, m); return; }
+    const shrink = 1 - tau / life;
+    m.compose(p, q, sc.setScalar(0.4 + 0.6 * shrink));
+    d.drops.setMatrixAt(i, m);
+  });
+  d.drops.instanceMatrix.needsUpdate = true;
+
+  for (const b of d.buoys) {
+    const y = waveHeight(b.base.x, b.base.z, t), e = 0.05;
+    const sx = (waveHeight(b.base.x + e, b.base.z, t) - y) / e, sz = (waveHeight(b.base.x, b.base.z + e, t) - y) / e;
+    b.m.position.set(b.base.x, Math.min(y, s - S * 0.04), b.base.z);
+    b.m.rotation.set(Math.atan(sz), 0, -Math.atan(sx));
+  }
+}
+
+// 0 → 1 → 0 bump over [from, from + len] of the loop phase (wraps around the loop end)
+const bump = (phase, from, len) => Math.sin(Math.PI * Math.min((((phase - from) % 1) + 1) % 1 / len, 1)) ** 2;
+
+function updateContent(t) {
+  if (STORY[P.scene]) return STORY[P.scene].update(demo.state, t);
+  const S = P.size, s = S / 2, w = 2 * Math.PI / P.loop, phase = t / P.loop;
+  if (P.scene === 'wave') return updateWave(t);
+  if (P.style !== 'simple') return updateHeroes(t);
+  const { ball, orbiters, popTarget, R } = demo;
+  const inside = new THREE.Vector3(
+    0.25 * S * Math.sin(2 * w * t),
+    -s + R + 0.55 * S * Math.abs(Math.sin(3 * w * t)),
+    0.25 * S * Math.cos(w * t));
+  const k = bump(phase, 0.55, 0.3);
+  ball.position.copy(inside).lerp(popTarget, k);
+  ball.scale.setScalar(1 + 0.3 * k);
+  ball.material.color.setHSL(phase, 0.85, 0.55);
+  orbiters.forEach((m, i) => {
+    const a = w * t * 2 + i * 2 * Math.PI / orbiters.length;
+    m.position.set(Math.cos(a) * 0.36 * S, 0.22 * S * Math.sin(2 * w * t + i), Math.sin(a) * 0.36 * S);
+    m.rotation.set(a * 2, a * 3, 0);
+  });
+}
+
+function updateHeroes(t) {
+  const S = P.size, s = S / 2, w = 2 * Math.PI / P.loop, phase = t / P.loop, { hs, popLen } = demo;
+  demo.heroes.forEach((h, n) => {
+    // bounce at home, sway a little sideways, then pop out to its own viewer at its own moment
+    // a tilted cube has no floor: the hero bobs around its home inside the inscribed sphere instead of bouncing
+    const home = h.anchor.clone()
+      .addScaledVector(h.side, 0.08 * S * hs * Math.sin(2 * w * t + n))
+      .setY(isVertex() ? 0.12 * S * Math.sin(3 * w * t + n) : -s + h.radius + 0.45 * S * Math.abs(Math.sin(3 * w * t + n)));
+    if (isVertex() && home.length() > s - h.radius) home.setLength(s - h.radius);
+    const k = bump(phase, h.start, popLen);
+    h.mesh.position.copy(home).lerp(h.pop, k);
+    h.mesh.scale.setScalar(1 + 0.3 * k);
+    h.mesh.rotation.set(w * t * 2 + n, w * t * 3, 0);
+    h.orbiters.forEach((m, j) => {
+      const a = w * t * 3 + j * 2 * Math.PI / h.orbiters.length;
+      m.position.set(h.anchor.x + Math.cos(a) * h.orbitR, (isVertex() ? 0.08 : 0.18) * S * Math.sin(2 * w * t + j + n), h.anchor.z + Math.sin(a) * h.orbitR);
+      if (isVertex() && m.position.length() > s - 0.065 * S) m.position.setLength(s - 0.065 * S);
+      m.rotation.set(a * 2, a * 3, 0);
+    });
+  });
+}
+
+// Viewpoints: the main one, its opposite corner, the two in between, and one from above (for the top).
+// Side faces are cut into segments (whole faces, or halves in the 4-corner demo). A segment takes a ground
+// viewpoint that sees it at a usable angle — the first in priority order for whole faces, the nearest one for
+// halves (that is the viewpoint at the segment's corner). The top always takes the view from above.
+// Only viewpoints that got a segment are rendered.
+let views = [];  // [{ label, eye, ground, key, cam, vp, rt }]
+let segs = [];   // [{ face, u0, u1, view }] — view is an index in views, or -1
+let faces = [];
+function updateProjection() {
+  const c = cubeCenter(), r = P.size * Math.sqrt(3) / 2, N = splits();
+  faces = faceDefs();
+  const candidates = VIEWPOINTS.map(v => ({ eye: v.eye.clone(), ground: true, label: v.label }));
+  const nGround = candidates.length, TOP = nGround;
+  candidates.push({ eye: c.clone().add(new THREE.Vector3(0, 14, 0)), ground: false, label: 'Сверху' });
+
+  const raw = [];
+  faces.forEach((f, i) => {
+    const n = i === 4 ? 1 : N;
+    for (let j = 0; j < n; j++) {
+      const u0 = j / n, u1 = (j + 1) / n;
+      if (i === 4 && !isVertex()) { raw.push({ face: i, u0, u1, k: TOP }); continue; }
+      const pc = f.o.clone().addScaledVector(f.u, (u0 + u1) / 2).addScaledVector(f.w, 0.5);
+      const facing = candidates.slice(0, nGround).map(cd => f.n.dot(cd.eye.clone().sub(pc).normalize()));
+      let ok = facing.map((_, q) => q).filter(q => facing[q] > 0.35);
+      if (isVertex()) {
+        // tilted faces: the ground viewpoint that sees the face most squarely; an upper face that nobody on the
+        // ground sees well goes to the view from above
+        const best = facing.indexOf(Math.max(...facing));
+        ok = f.n.y > 0 && facing[best] < 0.2 ? [TOP] : facing[best] > 0.05 ? [best] : [];
+      } else if (!ok.length) {
+        // very close viewers: nobody passes the angle threshold, so take the least grazing view that still sees it
+        const best = facing.indexOf(Math.max(...facing));
+        ok = facing[best] > 0 ? [best] : [];
+      }
+      if (N > 1) ok.sort((a, b) => candidates[a].eye.distanceTo(pc) - candidates[b].eye.distanceTo(pc));
+      raw.push({ face: i, u0, u1, k: ok.length ? ok[0] : -1 });
+    }
+  });
+  // a tilted face nobody sees (e.g. the bottom with a high, close viewer) gets its own face-on viewpoint,
+  // kept above the ground, so every panel still carries content
+  raw.forEach(x => {
+    if (x.k >= 0 || !isVertex()) return;
+    const f = faces[x.face], fc = f.o.clone().addScaledVector(f.u, 0.5).addScaledVector(f.w, 0.5);
+    const eye = fc.clone().addScaledVector(f.n, 9); eye.y = Math.max(eye.y, 0.5);
+    // stable key per face (100 + face), so a selected fallback view survives other fallbacks appearing
+    x.k = candidates.push({ eye, ground: true, key: 100 + x.face, label: `Фронтально к грани «${FACE_NAMES[x.face]}»` }) - 1;
+  });
+  const used = [...new Set(raw.map(x => x.k).filter(k => k >= 0))].sort((a, b) => a - b);
+  views = used.map((k, i) => {
+    const cd = candidates[k], cam = new THREE.PerspectiveCamera(30, 1, 0.1, 300);
+    cam.position.copy(cd.eye);
+    if (!cd.ground) cam.up.set(0, 0, -1);
+    cam.lookAt(c);
+    cam.fov = THREE.MathUtils.radToDeg(2 * Math.asin(Math.min(r / cd.eye.distanceTo(c), 0.99))) * 1.05;
+    cam.updateProjectionMatrix(); cam.updateMatrixWorld();
+    const vp = new THREE.Matrix4().multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse);
+    return { ...cd, key: cd.key ?? k, cam, vp, rt: getRT(i) };
+  });
+  segs = raw.map(x => ({ face: x.face, u0: x.u0, u1: x.u1, view: used.indexOf(x.k) }));
+  // Seam flags: side segments form a ring front→right→back→left; an edge is a seam when the neighbour
+  // segment is drawn for another viewpoint. The top is a seam on all sides.
+  if (isVertex()) {
+    // tilted cube: find the neighbour across each edge (left, right, bottom, top) geometrically
+    segs.forEach(sg => {
+      const f = faces[sg.face];
+      const mids = [f.o.clone().addScaledVector(f.w, 0.5), f.o.clone().add(f.u).addScaledVector(f.w, 0.5),
+        f.o.clone().addScaledVector(f.u, 0.5), f.o.clone().add(f.w).addScaledVector(f.u, 0.5)];
+      sg.seam = mids.map(m => {
+        const nb = segs.find(o => o !== sg && Math.abs(faces[o.face].n.dot(m.clone().sub(faces[o.face].o))) < 1e-4);
+        return nb ? +(nb.view !== sg.view) : 0;
+      });
+    });
+  } else {
+    const ring = segs.filter(sg => sg.face < 4);
+    ring.forEach((sg, i) => {
+      const prev = ring[(i + ring.length - 1) % ring.length], next = ring[(i + 1) % ring.length];
+      sg.seam = [+(prev.view !== sg.view), +(next.view !== sg.view), 0, 0];
+    });
+    segs.forEach(sg => { if (sg.face === 4) sg.seam = [1, 1, 1, 1]; });
+  }
+}
+
+// Draws one face (or a part of it along u) into its strip slot. src: { tex, vp, eye } — the image and the camera
+// it was taken with — or null for "no camera covers this face".
+const NO_SEAM = [0, 0, 0, 0];
+function drawFace(face, u0, u1, src, seam, raw) {
+  const f = faces[face], u = bakeMat.uniforms, R = P.faceRes;
+  u.uO.value.copy(f.o); u.uU.value.copy(f.u); u.uW.value.copy(f.w); u.uN.value.copy(f.n);
+  u.uURange.value.set(u0, u1);
+  u.uHasView.value = src ? 1 : 0;
+  if (src) { u.tContent.value = src.tex; u.uVP.value.copy(src.vp); u.uEye.value.copy(src.eye); }
+  u.uSeam.value.fromArray(seam);
+  u.uRot.value = STRIP.rot[face]; u.uFlip.value = +STRIP.flip[face]; u.uRaw.value = raw;
+  // (a face split into parts along u is only used by the face-mounted cube, where the strip is not turned)
+  bakeR.setViewport((slotOf(face) + u0) * R, 0, (u1 - u0) * R, R);
+  bakeR.render(bakeScene, bakeCam);
+}
+function beginStrip() {
+  bakeR.setRenderTarget(null);
+  bakeR.autoClear = false; bakeR.clear();
+}
+function endStrip() {
+  bakeR.setViewport(0, 0, faceCount() * P.faceRes, P.faceRes);
+  bakeR.autoClear = true;
+}
+
+function bake(t) {
+  updateContent(t);
+  for (const v of views) { bakeR.setRenderTarget(v.rt); bakeR.render(content, v.cam); }
+  beginStrip();
+  bakeMat.uniforms.uSolidEmpty.value = 0;
+  bakeMat.uniforms.uFadeColor.value.copy(demoFade);
+  for (const sg of segs) {
+    const v = views[sg.view];
+    drawFace(sg.face, sg.u0, sg.u1, v ? { tex: v.rt.texture, vp: v.vp, eye: v.eye } : null, fadeSeams() ? sg.seam : NO_SEAM, 0);
+  }
+  endStrip();
+}
+
+// ---------- ordinary (flat) video → cube: projected with the hero viewpoint's camera ----------
+// The camera that a plate is rendered with and a flat video is projected back with. It fits the cube's bounding
+// sphere into the shorter side of the frame, so the same rule works for 16:9, 1:1 and 9:16.
+function heroCamera(eye, aspect) {
+  const c = cubeCenter(), r = P.size * Math.sqrt(3) / 2;
+  const fit = 2 * Math.asin(Math.min(r / eye.distanceTo(c), 0.99)) * 1.12;   // radians, across the shorter side
+  const fovV = aspect >= 1 ? fit : 2 * Math.atan(Math.tan(fit / 2) / aspect);
+  const cam = new THREE.PerspectiveCamera(THREE.MathUtils.radToDeg(fovV), aspect, 0.1, 300);
+  cam.position.copy(eye); cam.lookAt(c);
+  cam.updateProjectionMatrix(); cam.updateMatrixWorld();
+  return cam;
+}
+// A face counts as seen by the hero only above this facing (cosine of the view angle): a face seen almost edge-on
+// would get a thin smeared strip of the picture, plus whatever lies just outside the cube outline in the video.
+const HERO_MIN_FACING = 0.12;
+const REAR_MIN_FACING = 0.4;
+const heroEye = () => VIEWPOINTS[P.hero].eye.clone();
+const flat = { video: null, canvas: document.createElement('canvas'), tex: null, ambient: new THREE.Color(0xe9e6e1) };
+flat.tex = new THREE.CanvasTexture(flat.canvas); flat.tex.colorSpace = THREE.SRGBColorSpace;
+// The optional second video, made for the back viewpoint: it takes the faces the hero cannot see
+const back = { video: null, canvas: document.createElement('canvas'), tex: null, ready: Promise.resolve() };
+back.tex = new THREE.CanvasTexture(back.canvas); back.tex.colorSpace = THREE.SRGBColorSpace;
+const BACK_POINT = 1;   // «Сзади, у павильона»: the hero turned by 180°, the three faces the hero cannot see
+function drawVideoFrame() {
+  for (const s of [flat, back]) {
+    const v = s.video;
+    if (v && v.readyState >= 2) { s.canvas.getContext('2d').drawImage(v, 0, 0, s.canvas.width, s.canvas.height); s.tex.needsUpdate = true; }
+  }
+}
+function bakeFlat() {
+  drawVideoFrame();
+  bakeFlatStrip();
+}
+function bakeFlatStrip() {
+  // With a back video: faces the hero sees show the hero's picture, the rest the back point's picture — from the
+  // main point the cube shows three faces meeting at a lower corner, from the back point the other three, so each
+  // face belongs to exactly one of them.
+  // Without one: a cube on its vertex looks the same after a 120° turn about its vertical diagonal. So the hero's picture,
+  // turned by 120° / 240°, is right for two more viewpoints: the hero eye turned by the same angle. Faces the hero
+  // sees show its picture; every other face shows the turned picture of the twin that sees it best.
+  // A hero that sees two faces (one upper, one lower) gives three exact sides; a hero that sees three faces
+  // (looking at a side corner) is exact only from itself, and the twins get their upper face plus part of the rest.
+  // (copying the clip onto the opposite faces was tried and dropped: from the opposite side a cube on a vertex
+  // has a different outline, so those faces picked up pixels from outside the cube in the video)
+  const eye = heroEye(), cam = heroCamera(eye, flat.canvas.width / flat.canvas.height);
+  const vp = new THREE.Matrix4().multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse);
+  const turns = symmetryTurns().map(m => ({ tex: flat.tex, eye: eye.clone().applyMatrix4(m), vp: vp.clone().multiply(m.clone().invert()) }));
+  let rear = null, rearMin = REAR_MIN_FACING;
+  if (back.video) {
+    const be = VIEWPOINTS[BACK_POINT].eye.clone(), bc = heroCamera(be, back.canvas.width / back.canvas.height);
+    rear = { tex: back.tex, eye: be, vp: new THREE.Matrix4().multiplyMatrices(bc.projectionMatrix, bc.matrixWorldInverse) };
+  } else if (isVertex()) {
+    // No back video: the faces the hero cannot see show the same clip, taken by a virtual camera looking straight at
+    // the corner where those faces meet (on the hero's diagonal, the other way). From there the cube has the same
+    // hexagonal outline as from the hero, all three faces are seen alike, so the picture wraps over them in one
+    // piece — no streaks, no seams between them. It is not exact for anyone standing behind (nothing could be with
+    // the hero's clip), but it reads as one picture.
+    const c = cubeCenter(), hidden = faces.filter(f => f.n.dot(eye.clone().sub(f.o.clone().addScaledVector(f.u, 0.5).addScaledVector(f.w, 0.5)).normalize()) <= HERO_MIN_FACING);
+    const dir = hidden.reduce((a, f) => a.add(f.n), new THREE.Vector3()).normalize();
+    // By default (rearMode 'point') the real back point is used instead: someone standing there sees the whole scene
+    // undistorted, as on the real cube's own clips; seen from the sides the upper back faces are stretched.
+    const ve = P.rearMode !== 'corner' ? VIEWPOINTS[BACK_POINT].eye.clone() : c.clone().addScaledVector(dir, eye.distanceTo(c));
+    const vc = heroCamera(ve, flat.canvas.width / flat.canvas.height);
+    const rvp = new THREE.Matrix4().multiplyMatrices(vc.projectionMatrix, vc.matrixWorldInverse);
+    // From behind the cube's outline is a different shape: its corners would reach past the picture (into the
+    // clip's background and the outline drawn by the AI) — zoom in until the whole back outline stays inside it
+    const k = backZoom(cam, rvp);
+    rear = { tex: flat.tex, eye: ve, vp: new THREE.Matrix4().makeScale(1 / k, 1 / k, 1).multiply(rvp) };
+    rearMin = 0;
+  }
+  beginStrip();
+  bakeMat.uniforms.uSolidEmpty.value = 1;
+  bakeMat.uniforms.uFadeColor.value.copy(flat.ambient);
+  faces.forEach((f, i) => {
+    const fc = f.o.clone().addScaledVector(f.u, 0.5).addScaledVector(f.w, 0.5);
+    const facing = s => f.n.dot(s.eye.clone().sub(fc).normalize());
+    // the back point sees its lower face squarely but its two upper faces at a grazing angle: projected from there
+    // they would be stretched into streaks (very visible from the sides), so those take the hero's upper face
+    // turned by 120° — undistorted, and exact from the two side points
+    const best = facing(turns[0]) > HERO_MIN_FACING ? turns[0] : rear && facing(rear) > rearMin ? rear
+      : turns.reduce((a, b) => (facing(b) > facing(a) ? b : a));
+    drawFace(i, 0, 1, best === rear || facing(best) > HERO_MIN_FACING ? best : null, NO_SEAM, 1);
+  });
+  endStrip();
+}
+// How much to zoom the back projection so every back-outline point lands inside the hero's cube outline (shrunk
+// a little, to stay clear of the outline itself)
+function backZoom(heroCam, rearVP) {
+  const c = cubeCenter(), q = cubeQuat(), S = P.size, corners = [];
+  for (const x of [-1, 1]) for (const y of [-1, 1]) for (const z of [-1, 1]) corners.push(new THREE.Vector3(x, y, z).multiplyScalar(S / 2).applyQuaternion(q).add(c));
+  const hero = convexHull(corners.map(v => { const p = v.clone().project(heroCam); return [p.x * 0.94, p.y * 0.94]; }));
+  const back = convexHull(corners.map(v => { const p = v.clone().applyMatrix4(rearVP); return [p.x, p.y]; }));
+  const inside = (x, y) => hero.every(([ax, ay], i) => { const [bx, by] = hero[(i + 1) % hero.length]; return (bx - ax) * (y - ay) - (by - ay) * (x - ax) >= 0; })
+    || hero.every(([ax, ay], i) => { const [bx, by] = hero[(i + 1) % hero.length]; return (bx - ax) * (y - ay) - (by - ay) * (x - ax) <= 0; });
+  // sample the back outline's edges, not just its corners
+  const pts = back.flatMap(([ax, ay], i) => { const [bx, by] = back[(i + 1) % back.length]; return [...Array(8).keys()].map(t => [ax + (bx - ax) * t / 8, ay + (by - ay) * t / 8]); });
+  let k = 1;
+  while (k < 3 && !pts.every(([x, y]) => inside(x / k, y / k))) k += 0.01;
+  return k;
+}
+// Turns about the cube's vertical axis that map the cube onto itself: 0°, 120°, 240° for a cube on its vertex
+function symmetryTurns() {
+  const c = cubeCenter(), n = isVertex() ? 3 : 4;
+  return [...Array(n).keys()].map(k => new THREE.Matrix4().makeTranslation(c.x, c.y, c.z)
+    .multiply(new THREE.Matrix4().makeRotationY(k * 2 * Math.PI / n)).multiply(new THREE.Matrix4().makeTranslation(-c.x, -c.y, -c.z)));
+}
+// Where else the hero's picture works: the hero eye turned by each symmetry turn
+const twinEyes = () => symmetryTurns().slice(1).map(m => heroEye().applyMatrix4(m));
+
+// ---------- test pattern: every face numbered and named, an arrow to its top, laid out like the strip ----------
+const patternCanvas = document.createElement('canvas');
+const patternTex = new THREE.CanvasTexture(patternCanvas); patternTex.colorSpace = THREE.SRGBColorSpace;
+function drawPattern() {
+  const R = P.faceRes, n = faceCount(), g = patternCanvas.getContext('2d');
+  patternCanvas.width = n * R; patternCanvas.height = R;
+  const colors = ['#e74c3c', '#27ae60', '#2980b9', '#f39c12', '#8e44ad', '#16a085'];
+  for (let face = 0; face < n; face++) {
+    // the face's own picture, upright as seen from outside…
+    const c = document.createElement('canvas'); c.width = c.height = R;
+    const fg = c.getContext('2d');
+    fg.fillStyle = colors[face]; fg.fillRect(0, 0, R, R);
+    fg.strokeStyle = 'rgba(255,255,255,.35)'; fg.lineWidth = 2;
+    for (let k = 1; k < 8; k++) { fg.beginPath(); fg.moveTo(k * R / 8, 0); fg.lineTo(k * R / 8, R); fg.moveTo(0, k * R / 8); fg.lineTo(R, k * R / 8); fg.stroke(); }
+    fg.lineWidth = 14; fg.strokeStyle = '#fff'; fg.strokeRect(7, 7, R - 14, R - 14);
+    fg.fillStyle = '#fff'; fg.textAlign = 'center'; fg.textBaseline = 'middle';
+    fg.font = `bold ${R * 0.42}px system-ui, sans-serif`; fg.fillText(String(face + 1), R / 2, R * 0.55);
+    fg.font = `bold ${R * 0.09}px system-ui, sans-serif`; fg.fillText(FACE_NAMES[face].toUpperCase(), R / 2, R * 0.85);
+    fg.beginPath(); fg.moveTo(R / 2, R * 0.05); fg.lineTo(R * 0.4, R * 0.18); fg.lineTo(R * 0.6, R * 0.18); fg.closePath(); fg.fill();
+    fg.font = `${R * 0.05}px system-ui, sans-serif`; fg.fillText('верх грани', R / 2, R * 0.23);
+    fg.fillStyle = '#000'; fg.fillRect(14, R - 60, 46, 46);   // a black corner marks bottom-left, to spot mirroring
+    // …placed into its slot, turned and mirrored the way the controller expects (canvas y points down)
+    g.save();
+    g.translate((slotOf(face) + 0.5) * R, R / 2);
+    g.rotate(-STRIP.rot[face] * Math.PI / 2);
+    if (STRIP.flip[face]) g.scale(-1, 1);
+    g.drawImage(c, -R / 2, -R / 2);
+    g.restore();
+  }
+  patternTex.needsUpdate = true;
+}
+
+// ---------- plates for the AI: the empty room inside the cube, exactly as the hero camera sees it ----------
+const plateR = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+plateR.setPixelRatio(1);
+plateR.toneMapping = THREE.ACESFilmicToneMapping;
+function renderPlate(w, h, wallHex) {
+  const S = P.size, c = cubeCenter(), q = cubeQuat(), eye = heroEye(), cam = heroCamera(eye, w / h);
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x6e6e6e);            // outside the cube: discarded later
+  const room = new THREE.Mesh(new THREE.BoxGeometry(S * 0.995, S * 0.995, S * 0.995),
+    new THREE.MeshStandardMaterial({ color: wallHex, roughness: 1, side: THREE.BackSide }));
+  room.position.copy(c); room.quaternion.copy(q);
+  // faint lines along the inner corners, so the AI reads the box geometry
+  const edges = new THREE.LineSegments(new THREE.EdgesGeometry(room.geometry), new THREE.LineBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.18 }));
+  edges.position.copy(c); edges.quaternion.copy(q);
+  const sun = new THREE.DirectionalLight(0xffffff, 1.6); sun.position.copy(c).add(new THREE.Vector3(S, S * 3, S * 0.5));
+  scene.add(room, edges, new THREE.HemisphereLight(0xffffff, 0xd8d2c8, 1.6), sun);
+  plateR.setSize(w, h, false);
+  plateR.render(scene, cam);
+  const clean = plateR.domElement.toDataURL('image/png');
+  room.geometry.dispose(); room.material.dispose(); edges.geometry.dispose(); edges.material.dispose();
+
+  const img = document.createElement('canvas'); img.width = w; img.height = h;
+  const g = img.getContext('2d');
+  g.drawImage(plateR.domElement, 0, 0);
+  drawGuides(g, w, h);
+  const camera = { viewpoint: VIEWPOINTS[P.hero].label, eye: eye.toArray(), target: c.toArray(), fovV: cam.fov, aspect: w / h,
+    size: [w, h], cube: { edge: P.size, lowerVertex: P.plinth, yaw: P.yaw } };
+  return { clean, guides: img.toDataURL('image/png'), camera };
+}
+// Guides over a w×h picture taken with the hero camera: cube outline, panel edges, face names, safe area —
+// for the person (and for checking a generated video), never for the AI
+function drawGuides(g, w, h) {
+  const S = P.size, c = cubeCenter(), q = cubeQuat(), eye = heroEye(), cam = heroCamera(eye, w / h);
+  const toPx = v => { const p = v.clone().project(cam); return [(p.x + 1) / 2 * w, (1 - p.y) / 2 * h]; };
+  const corners = [];
+  for (const x of [-1, 1]) for (const y of [-1, 1]) for (const z of [-1, 1]) corners.push(new THREE.Vector3(x, y, z).multiplyScalar(S / 2).applyQuaternion(q).add(c));
+  const hull = convexHull(corners.map(toPx));
+  g.lineWidth = Math.max(3, w / 480); g.strokeStyle = '#ffffff';
+  g.beginPath(); hull.forEach(([x, y], i) => (i ? g.lineTo(x, y) : g.moveTo(x, y))); g.closePath(); g.stroke();
+  const visible = faces.map(f => f.n.dot(eye.clone().sub(f.o.clone().addScaledVector(f.u, 0.5).addScaledVector(f.w, 0.5)).normalize()) > HERO_MIN_FACING);
+  g.lineWidth = Math.max(2, w / 960); g.strokeStyle = '#3ad1ff';
+  faces.forEach((f, i) => {
+    if (!visible[i]) return;
+    const pts = [f.o, f.o.clone().add(f.u), f.o.clone().add(f.u).add(f.w), f.o.clone().add(f.w)].map(toPx);
+    g.beginPath(); pts.forEach(([x, y], k) => (k ? g.lineTo(x, y) : g.moveTo(x, y))); g.closePath(); g.stroke();
+    const [cx, cy] = toPx(f.o.clone().addScaledVector(f.u, 0.5).addScaledVector(f.w, 0.5));
+    g.fillStyle = '#3ad1ff'; g.font = `bold ${Math.round(h / 30)}px system-ui, sans-serif`; g.textAlign = 'center';
+    g.fillText(`${i + 1} · ${FACE_NAMES[i]}`, cx, cy);
+  });
+  const [mx, my] = hull.reduce(([a, b], [x, y]) => [a + x / hull.length, b + y / hull.length], [0, 0]);
+  g.setLineDash([w / 120, w / 160]); g.strokeStyle = '#ffd400';
+  g.beginPath(); hull.forEach(([x, y], i) => { const px = mx + (x - mx) * 0.88, py = my + (y - my) * 0.88; i ? g.lineTo(px, py) : g.moveTo(px, py); }); g.closePath(); g.stroke();
+  g.setLineDash([]);
+  g.fillStyle = '#fff'; g.font = `${Math.round(h / 34)}px system-ui, sans-serif`; g.textAlign = 'left';
+  g.fillText(`Точка «${VIEWPOINTS[P.hero].label}». Белый контур — куб, всё вне него не попадёт на экран. Жёлтый — безопасная зона.`, w * 0.02, h * 0.05);
+}
+function convexHull(pts) {
+  const p = pts.slice().sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const cross = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+  const lower = [], upper = [];
+  for (const q of p) { while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], q) <= 0) lower.pop(); lower.push(q); }
+  for (const q of p.reverse()) { while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], q) <= 0) upper.pop(); upper.push(q); }
+  return lower.slice(0, -1).concat(upper.slice(0, -1));
+}
+
+bakeR.setSize(P.faceRes * faceCount(), P.faceRes, false);
+
+// ---------- main view: park + physical cube ----------
+const view = $('view');
+const mainR = new THREE.WebGLRenderer({ antialias: true });
+mainR.setPixelRatio(Math.min(devicePixelRatio, 2));
+mainR.shadowMap.enabled = true;
+mainR.toneMapping = THREE.ACESFilmicToneMapping;
+view.appendChild(mainR.domElement);
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 600);
+const controls = new OrbitControls(camera, mainR.domElement);
+controls.enableDamping = true;
+
+const stripTex = new THREE.CanvasTexture(stripCanvas);
+stripTex.colorSpace = THREE.SRGBColorSpace;
+stripTex.anisotropy = 8;
+let videoTex = null, videoEl = null;
+const screenMat = new THREE.MeshBasicMaterial({ map: stripTex, toneMapped: false });
+
+const hemi = new THREE.HemisphereLight(0xbfd8ff, 0x3a4a2a, 1);
+const sun = new THREE.DirectionalLight(0xffffff, 2);
+sun.position.set(-30, 50, 20); sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+Object.assign(sun.shadow.camera, { left: -40, right: 40, top: 40, bottom: -40, far: 150 });
+scene.add(hemi, sun);
+// Faint LED spill on the ground at night
+const spill = new THREE.PointLight(0x66ccff, 0, 25, 2);
+scene.add(spill);
+
+// "Just the cube": a plain floor with a 1 m grid, nothing else around
+const emptyRoot = new THREE.Group();
+scene.add(emptyRoot);
+{
+  const floor = new THREE.Mesh(new THREE.CircleGeometry(80, 64), new THREE.MeshStandardMaterial({ color: 0x2a2d33, roughness: 0.9 }));
+  floor.rotation.x = -Math.PI / 2; floor.receiveShadow = true;
+  const grid = new THREE.GridHelper(60, 60, 0x4a5262, 0x353b46);
+  grid.position.y = 0.01;
+  emptyRoot.add(floor, grid);
+}
+
+// The real plaza, shifted so that its cube sits at the origin of this scene
+const plazaRoot = new THREE.Group();
+buildPlaza(plazaRoot);
+plazaRoot.position.set(-LAYOUT.cube.x, 0, -LAYOUT.cube.z);
+scene.add(plazaRoot);
+function setEnv(env) {
+  P.env = env;
+  plazaRoot.visible = env === 'plaza'; emptyRoot.visible = env === 'empty';
+  $('envPlaza').classList.toggle('on', env === 'plaza'); $('envEmpty').classList.toggle('on', env === 'empty');
+}
+
+// Viewer markers at the ground viewpoints (main one in orange, the rest dimmer)
+const personGeo = new THREE.CapsuleGeometry(0.22, 1.25, 4, 12), ringGeo = new THREE.RingGeometry(0.5, 0.65, 40);
+const markerMats = [0xffb020, 0x9a7a3a].map(color =>
+  [new THREE.MeshStandardMaterial({ color }), new THREE.MeshBasicMaterial({ color })]);
+const markers = new THREE.Group();
+scene.add(markers);
+function buildMarkers() {
+  markers.clear();
+  VIEWPOINTS.forEach((v, i) => {
+    if (!DEV && i > BACK_POINT) return;
+    const [bodyMat, ringMat] = markerMats[i === 0 ? 0 : 1];
+    const m = new THREE.Group(), person = new THREE.Mesh(personGeo, bodyMat), ring = new THREE.Mesh(ringGeo, ringMat);
+    person.position.y = 0.85; person.castShadow = true;
+    ring.rotation.x = -Math.PI / 2; ring.position.y = 0.02;
+    m.add(person, ring); m.position.copy(v.eye).setY(0); m.userData.eye = v.eye;
+    markers.add(m);
+  });
+}
+
+let cubeGroup = null;
+function buildCube() {
+  if (cubeGroup) { scene.remove(cubeGroup); cubeGroup.traverse(o => { o.geometry?.dispose(); if (o.material && o.material !== screenMat) o.material.dispose(); }); }
+  cubeGroup = new THREE.Group();
+  faceDefs().forEach((f, i) => {
+    const g = new THREE.BufferGeometry();
+    const pts = [f.o, f.o.clone().add(f.u), f.o.clone().add(f.u).add(f.w), f.o.clone().add(f.w)];
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pts.flatMap(p => [p.x, p.y, p.z]), 3));
+    // corners (u, v) of the face picture → where they sit in the strip (slot, turn, mirror from strip-layout.js)
+    const n = faceCount(), s = slotOf(i);
+    g.setAttribute('uv', new THREE.Float32BufferAttribute([[0, 0], [1, 0], [1, 1], [0, 1]]
+      .flatMap(([cu, cv]) => { const [a, b] = faceToSlot(i, cu, cv); return [(s + a) / n, b]; }), 2));
+    g.setIndex([0, 1, 2, 0, 2, 3]);
+    cubeGroup.add(new THREE.Mesh(g, screenMat));
+  });
+  // Metal frame on the 12 edges
+  const S = P.size, c = cubeCenter(), q = cubeQuat(), t = 0.04;
+  const frameMat = new THREE.MeshStandardMaterial({ color: 0x111111, metalness: 0.6, roughness: 0.4 });
+  const corner = k => new THREE.Vector3(...k.map(x => x * S / 2)).applyQuaternion(q).add(c);
+  for (const axis of [0, 1, 2]) for (const a of [-1, 1]) for (const b of [-1, 1]) {
+    const k0 = [0, 0, 0], others = [0, 1, 2].filter(k => k !== axis);
+    k0[others[0]] = a; k0[others[1]] = b;
+    const k1 = [...k0]; k0[axis] = -1; k1[axis] = 1;
+    const A = corner(k0), B = corner(k1);
+    const m = new THREE.Mesh(new THREE.BoxGeometry(t, t, S + t), frameMat);
+    m.position.copy(A).add(B).multiplyScalar(0.5); m.lookAt(B);
+    m.castShadow = true; cubeGroup.add(m);
+  }
+  if (isVertex()) {
+    // square base on the tiles and a post up to the lower vertex, as on the plaza
+    const postMat = new THREE.MeshStandardMaterial({ color: 0x2a2d33, roughness: 0.7 });
+    const base = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.25, 1.1), postMat);
+    base.position.y = 0.125;
+    const post = new THREE.Mesh(new THREE.BoxGeometry(0.35, P.plinth, 0.35), postMat);
+    post.position.y = P.plinth / 2; post.rotation.y = THREE.MathUtils.degToRad(P.yaw);
+    base.castShadow = post.castShadow = true;
+    cubeGroup.add(base, post);
+  } else if (P.plinth > 0) {
+    const plinth = new THREE.Mesh(new THREE.BoxGeometry(S * 0.9, P.plinth, S * 0.9),
+      new THREE.MeshStandardMaterial({ color: 0x2a2d33, roughness: 0.7 }));
+    plinth.position.y = P.plinth / 2; plinth.castShadow = plinth.receiveShadow = true;
+    cubeGroup.add(plinth);
+  }
+  scene.add(cubeGroup);
+  spill.position.set(0, P.plinth + 0.3, 0);
+}
+
+// ---------- environment presets ----------
+function setNight(night) {
+  $('night').classList.toggle('on', night); $('day').classList.toggle('on', !night);
+  scene.background = new THREE.Color(night ? 0x060912 : 0x9cc7ee);
+  scene.fog = new THREE.Fog(scene.background, 40, night ? 110 : 160);
+  hemi.intensity = night ? 0.12 : 1.1;
+  sun.intensity = night ? 0.15 : 2.5;
+  sun.color.set(night ? 0x8fa8ff : 0xffffff);
+  spill.intensity = night ? 6 : 0;
+}
+
+// ---------- camera: free, or standing at one of the viewpoints ----------
+let camMode = 'free', camView = 0, fly = null;
+function highlightCamButtons() {
+  document.querySelectorAll('#viewBtns button').forEach(b => b.classList.toggle('on', camMode === 'view' && +b.dataset.v === camView));
+  $('camFree').classList.toggle('on', camMode === 'free');
+}
+// The finished clips (ready 3840×640 strips) the page shows
+const CLIPS = [
+  { label: 'Тыква', src: 'videos/pumpkin.mp4' },
+  { label: 'Клавиатура (проба)', src: 'videos/keyboard.mp4' },   // the 480p draft; the final is not made yet
+];
+function renderClipButtons() {
+  const box = $('clipBtns'); box.innerHTML = '';
+  CLIPS.forEach((c, i) => {
+    const b = document.createElement('button');
+    b.textContent = c.src ? c.label : `${c.label} — скоро`; b.disabled = !c.src; b.dataset.c = i;
+    b.onclick = () => playClip(i);
+    box.appendChild(b);
+  });
+}
+function playClip(i) {
+  loadVideo(CLIPS[i].src);
+  document.querySelectorAll('#clipBtns button').forEach(b => b.classList.toggle('on', +b.dataset.c === i));
+}
+function renderViewButtons() {
+  const box = $('viewBtns'); box.innerHTML = '';
+  VIEWPOINTS.forEach((v, i) => {
+    if (!DEV && i > BACK_POINT) return;   // the page shows the main and the back viewpoint; the others are for making clips
+    const b = document.createElement('button');
+    b.textContent = v.label; b.dataset.v = i; b.onclick = () => setCamMode('view', i);
+    box.appendChild(b);
+  });
+  highlightCamButtons();
+}
+function setCamMode(m, idx = 0) {
+  camMode = m; camView = idx;
+  if (m !== 'view') fly = null;
+  highlightCamButtons();
+  controls.enabled = m === 'free';
+  if (m === 'view') flyTo(VIEWPOINTS[idx].eye.clone(), cubeCenter());
+  // the back point is close to the cube (the pavilion stands right behind it): a wide lens there, like a phone's
+  // wide-angle camera, so the cube is seen with the plaza around it
+  camera.fov = m === 'view' && idx === BACK_POINT ? 75 : 50; camera.updateProjectionMatrix();
+}
+function flyTo(pos, target) {
+  // apply any leftover drag inertia now, so it doesn't kick in after the flight lands
+  controls.enableDamping = false; controls.update(); controls.enableDamping = true;
+  fly = { p0: camera.position.clone(), t0: controls.target.clone(), p1: pos, t1: target, start: performance.now() };
+}
+function resetFreeCam() {
+  // from the north passage, above head height, clear of the plaza buildings
+  camera.position.set(4 - LAYOUT.cube.x, 6, -15 - LAYOUT.cube.z);
+  controls.target.copy(cubeCenter());
+}
+$('camFree').onclick = () => setCamMode('free');
+$('envPlaza').onclick = () => setEnv('plaza');
+$('envEmpty').onclick = () => setEnv('empty');
+$('night').onclick = () => setNight(true);
+$('day').onclick = () => setNight(false);
+
+// ---------- sources ----------
+// 'demo'    — a generated scene baked live; 'video' — a ready strip video (N:1);
+// 'flat'    — an ordinary video projected with the hero camera; 'pattern' — the numbered test pattern
+// A loaded video close to N:1 is taken as a ready strip, anything else as an ordinary video to convert.
+function checkVideoAspect() {
+  if (!videoEl?.videoWidth) return;
+  const ar = videoEl.videoWidth / videoEl.videoHeight;
+  $('status').textContent = `Готовая развёртка ${videoEl.videoWidth}×${videoEl.videoHeight}`
+    + (Math.abs(ar - faceCount()) > 0.15 ? ` — внимание: пропорции ${ar.toFixed(2)}:1, ожидается ${faceCount()}:1.` : '');
+}
+let source = 'demo';
+function setSource(s) {
+  source = s;
+  document.querySelectorAll('.demoBtn').forEach(b => b.classList.toggle('on', s === 'demo' && b.dataset.scene === P.scene));
+  $('patternBtn').classList.toggle('on', s === 'pattern');
+  // only the video on show keeps decoding
+  // (play() is rejected when a pause() interrupts it — that is expected here)
+  if (videoEl) s === 'video' ? videoEl.play().catch(() => {}) : videoEl.pause();
+  for (const v of [flat.video, back.video]) if (v) s === 'flat' && !exporting ? v.play().catch(() => {}) : v.pause();
+  if (s === 'pattern') drawPattern();
+  screenMat.map = s === 'video' ? videoTex : s === 'pattern' ? patternTex : stripTex;
+  screenMat.needsUpdate = true;
+  $('recBtn').disabled = !(s === 'demo' || s === 'flat') || recording;
+}
+$('patternBtn').onclick = () => setSource('pattern');
+// demo buttons: switch to the generated content of that scene
+function setDemo(sc) {
+  if (sc !== P.scene) { P.scene = sc; rebuild(); }
+  setSource('demo');
+}
+document.querySelectorAll('.demoBtn').forEach(b => { b.onclick = () => setDemo(b.dataset.scene); });
+// stop a video completely before dropping it
+function dropVideo(v) {
+  if (!v) return;
+  const url = v.src;
+  v.pause(); v.removeAttribute('src'); v.load();
+  URL.revokeObjectURL(url);
+}
+$('fileIn').onchange = e => {
+  const file = e.target.files[0]; if (!file) return;
+  e.target.value = '';
+  loadVideo(URL.createObjectURL(file));
+};
+function loadVideo(src) {
+  const v = document.createElement('video');
+  Object.assign(v, { src, loop: true, muted: true, playsInline: true });
+  v.onloadedmetadata = () => {
+    const ar = v.videoWidth / v.videoHeight;
+    if (!flat.force && Math.abs(ar - faceCount()) < 0.3) {
+      // a ready strip: shown on the cube as it is
+      dropVideo(videoEl); videoTex?.dispose();
+      videoEl = v; videoTex = new THREE.VideoTexture(v); videoTex.colorSpace = THREE.SRGBColorSpace;
+      checkVideoAspect();
+      setSource('video');
+    } else {
+      // an ordinary video: projected with the hero camera (frames are copied into a canvas, so offline export can seek)
+      dropVideo(flat.video);
+      flat.video = v;
+      const k = Math.min(1, 3840 / v.videoWidth);
+      flat.canvas.width = Math.round(v.videoWidth * k); flat.canvas.height = Math.round(v.videoHeight * k);
+      flat.tex.dispose();
+      flat.ready = new Promise(r => v.addEventListener('loadeddata', r, { once: true })).then(measureAmbient);
+      $('status').textContent = `Обычное видео ${v.videoWidth}×${v.videoHeight} (${ar.toFixed(2)}:1) → куб для точки «${VIEWPOINTS[P.hero].label}»`;
+      setSource('flat');
+    }
+  };
+}
+// the second video, for the back point (always an ordinary video); it plays in step with the main one
+function loadBackVideo(src) {
+  const v = document.createElement('video');
+  Object.assign(v, { src, loop: true, muted: true, playsInline: true });
+  dropVideo(back.video);
+  back.video = v;
+  back.ready = new Promise(r => v.addEventListener('loadeddata', r, { once: true }));
+  v.onloadedmetadata = () => {
+    const k = Math.min(1, 3840 / v.videoWidth);
+    back.canvas.width = Math.round(v.videoWidth * k); back.canvas.height = Math.round(v.videoHeight * k);
+    back.tex.dispose();
+    $('backStatus').textContent = `Обратная сторона: ${v.videoWidth}×${v.videoHeight} для точки «${VIEWPOINTS[BACK_POINT].label}»`;
+    if (source === 'flat' && !exporting) v.play().catch(() => {});
+  };
+}
+$('backIn').onchange = e => {
+  const file = e.target.files[0]; if (!file) return;
+  e.target.value = '';
+  loadBackVideo(URL.createObjectURL(file));
+};
+// The backdrop for faces the hero cannot see: the average colour of the face the hero sees most squarely, read
+// back from the baked strip (WebGL readback; reading video frames through a 2D canvas returns blank pixels in
+// headless Chrome). What lies outside the cube outline in the video is arbitrary, so it is not used.
+function faceColour() {
+  const eye = heroEye(), centre = f => f.o.clone().addScaledVector(f.u, 0.5).addScaledVector(f.w, 0.5);
+  const facing = i => faces[i].n.dot(eye.clone().sub(centre(faces[i])).normalize());
+  const best = faces.reduce((b, _, i) => (facing(i) > facing(b) ? i : b), 0);
+  const R = P.faceRes, gl = bakeR.getContext(), px = new Uint8Array((R / 2) * (R / 2) * 4);
+  gl.readPixels((slotOf(best) + 0.25) * R, R / 4, R / 2, R / 2, gl.RGBA, gl.UNSIGNED_BYTE, px);
+  let r = 0, g = 0, b = 0;
+  for (let k = 0; k < px.length; k += 4) { r += px[k]; g += px[k + 1]; b += px[k + 2]; }
+  const n = px.length / 4;
+  return new THREE.Color().setRGB(r / n / 255, g / n / 255, b / n / 255, THREE.SRGBColorSpace);
+}
+// The first frames of a freshly loaded video can still be blank, so measure over a few animation frames until the
+// picture shows up (a genuinely black video gives up after ~0.5 s and keeps black).
+async function measureAmbient() {
+  for (let k = 0; k < 30; k++) {
+    await new Promise(r => requestAnimationFrame(r));
+    if (flat.video.readyState < 2) continue;
+    drawVideoFrame(); bakeFlatStrip();
+    const c = faceColour();
+    if (c.r + c.g + c.b > 0.02 || k === 29) { flat.ambient.copy(c); return; }
+  }
+}
+// hero viewpoint and ambient choice
+function renderHeroOptions() {
+  $('heroSel').innerHTML = VIEWPOINTS.map((v, i) => `<option value="${i}"${i === P.hero ? ' selected' : ''}>${v.label}</option>`).join('');
+}
+$('heroSel').onchange = e => { P.hero = +e.target.value; if (flat.video) flat.ready = measureAmbient(); };
+// plate for the AI: clean image, the same with guides, and the camera (JSON)
+const download = (href, name) => { const a = document.createElement('a'); a.href = href; a.download = name; a.click(); };
+$('plateBtn').onclick = () => {
+  const story = STORY[P.scene], p = renderPlate(1920, 1080, story ? story.WALL : 0xece6dd), tag = `cube-plate-p${P.hero + 1}`;
+  download(p.clean, `${tag}.png`);
+  download(p.guides, `${tag}-guides.png`);
+  download(URL.createObjectURL(new Blob([JSON.stringify(p.camera, null, 2)], { type: 'application/json' })), `${tag}-camera.json`);
+};
+// realtime recording of the strip (WebM) — for a frame-exact MP4 use tools/convert.mjs
+let recording = false;
+$('recBtn').onclick = () => {
+  const mime = ['video/webm;codecs=vp9', 'video/webm'].find(m => MediaRecorder.isTypeSupported(m));
+  if (!mime || recording) return;
+  const stream = stripCanvas.captureStream(30), rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 20e6 }), chunks = [];
+  const len = source === 'flat' ? flat.video.duration : loopLen();
+  const name = `cube-${source === 'flat' ? 'video' : P.scene}-p${P.hero + 1}-${stripCanvas.width}x${stripCanvas.height}.webm`;
+  if (source === 'flat') flat.video.currentTime = 0;
+  recStart = performance.now();
+  rec.ondataavailable = e => e.data.size && chunks.push(e.data);
+  rec.onstop = () => {
+    download(URL.createObjectURL(new Blob(chunks, { type: mime })), name);
+    stream.getTracks().forEach(tr => tr.stop());
+    recording = false; recStart = null; setSource(source);
+    $('status').textContent = 'Записано: ' + name;
+  };
+  recording = true; setSource(source);
+  rec.start();
+  $('status').textContent = `Запись ${len.toFixed(1)} с…`;
+  setTimeout(() => rec.stop(), len * 1000 + 150);
+};
+let recStart = null;
+
+// ---------- build ----------
+function rebuild() {
+  bakeR.setSize(faceCount() * P.faceRes, P.faceRes, false);
+  updateProjection(); buildContent(); buildCube(); buildMarkers();
+  renderViewButtons(); renderHeroOptions();
+  if (source === 'pattern') drawPattern();
+  const names = STRIP.order.filter(f => f < faceCount()).map(f => FACE_NAMES[f]);
+  $('formatNote').innerHTML = `Видео — полоса ${faceCount() * P.faceRes}×${P.faceRes} (${faceCount()} квадратов по ${P.faceRes}×${P.faceRes}), слева направо: <b>${names.join(', ')}</b>.`
+    + ' «Перед» — нижняя грань; с террасы кафе виден её стык с верхней гранью, как на фото IMG_2089.';
+}
+
+function resize() {
+  const w = view.clientWidth, h = view.clientHeight;
+  mainR.setSize(w, h); camera.aspect = w / h; camera.updateProjectionMatrix();
+}
+addEventListener('resize', resize);
+
+// ---------- loop ----------
+// ?t=7 freezes the demo at that second (handy for checking a single frame)
+const freezeT = new URLSearchParams(location.search).has('t') ? +new URLSearchParams(location.search).get('t') : null;
+const hud = $('hud');
+// Offline export (driven by a script): render the strip at an exact time and hand it back as an image
+let exporting = false;
+window.cubeExport = {
+  info: () => ({ width: stripCanvas.width, height: stripCanvas.height, loop: loopLen(), scene: P.scene,
+    viewpoints: VIEWPOINTS.map(v => v.label), flat: flat.video ? { duration: flat.video.duration, width: flat.video.videoWidth, height: flat.video.videoHeight,
+      ambient: '#' + flat.ambient.getHexString(THREE.SRGBColorSpace) } : null }),
+  setScene: sc => { exporting = true; setDemo(sc); },
+  frame: t => { exporting = true; bake(t); return stripCanvas.toDataURL('image/jpeg', 0.93); },
+  setHero: i => { P.hero = i; renderHeroOptions(); },
+  twins: () => twinEyes().map(e => e.toArray()),   // eyes where the hero's picture also works
+  lookFrom: (x, y, z) => { setCamMode('view'); flyTo(new THREE.Vector3(x, y, z), cubeCenter()); },
+  forceFlat: on => { flat.force = on; },   // treat every loaded video as an ordinary one (convert.mjs)
+  backVideo: src => loadBackVideo(src),
+  rearMode: m => { P.rearMode = m; },   // what the back faces show without a back video: 'point' (default) or 'corner'
+  plate: (w, h, wall) => renderPlate(w, h, wall ?? (STORY[P.scene] ? STORY[P.scene].WALL : 0xece6dd)),
+  pattern: () => { setSource('pattern'); return patternCanvas.toDataURL('image/png'); },
+  // the cube's edges as the hero sees them, in pixels of a w×h picture: [[x1, y1, x2, y2], …] — where an AI video
+  // model draws its glass box, to be wiped before the clip goes onto the back faces (tools/unedge.mjs)
+  edgeLines: (w, h) => {
+    const eye = heroEye(), cam = heroCamera(eye, w / h), seen = new Map();
+    const toPx = v => { const p = v.clone().project(cam); return [(p.x + 1) / 2 * w, (1 - p.y) / 2 * h]; };
+    faces.forEach(f => {
+      if (f.n.dot(eye.clone().sub(f.o.clone().addScaledVector(f.u, 0.5).addScaledVector(f.w, 0.5)).normalize()) <= HERO_MIN_FACING) return;
+      const pts = [f.o, f.o.clone().add(f.u), f.o.clone().add(f.u).add(f.w), f.o.clone().add(f.w)].map(toPx);
+      // an edge shared by two faces once
+      pts.forEach((a, k) => { const b = pts[(k + 1) % 4], key = [a, b].map(p => p.map(Math.round).join(',')).sort().join(' ');
+        seen.set(key, [...a, ...b]); });
+    });
+    return [...seen.values()];
+  },
+  // guides over a frame of a generated video (an image data URL): does the picture sit where the cube is?
+  overlay: async (url, w, h) => {
+    const im = new Image(); im.src = url; await im.decode();
+    const c = document.createElement('canvas'); c.width = w; c.height = h;
+    const g = c.getContext('2d'); g.drawImage(im, 0, 0, w, h);
+    drawGuides(g, w, h);
+    return c.toDataURL('image/jpeg', 0.9);
+  },
+  // a flat video loaded through #fileIn: seek to t, project, hand back the strip
+  flatFrame: async t => {
+    await flat.ready; await back.ready;
+    exporting = true;
+    const seek = (v, t) => (Math.abs(v.currentTime - t) > 1e-4 ? new Promise(r => { v.addEventListener('seeked', r, { once: true }); v.currentTime = t; }) : null);
+    // the back video loops on its own length if it is shorter
+    await Promise.all([flat.video, back.video].filter(Boolean).map(v => { v.pause(); return seek(v, v === flat.video ? t : t % v.duration); }));
+    bakeFlat();
+    return stripCanvas.toDataURL('image/jpeg', 0.93);
+  },
+  // A first frame for the AI: the story scene at time t through the hero camera, with lit, shaded walls and
+  // marked inner corners (instead of the flat unlit backdrop), so an image model can read the room's shape
+  keyframe: (t, w, h) => {
+    exporting = true; updateContent(t);
+    const room = demo.group.children[0], flatWall = room.material, S = P.size, c = cubeCenter();
+    room.material = new THREE.MeshStandardMaterial({ color: STORY[P.scene].WALL, roughness: 1, side: THREE.BackSide });
+    const edges = new THREE.LineSegments(new THREE.EdgesGeometry(room.geometry), new THREE.LineBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.35 }));
+    edges.quaternion.copy(room.quaternion);
+    const sun = new THREE.DirectionalLight(0xffffff, 2.2); sun.position.set(S, S * 3, S * 0.5);
+    const sky = new THREE.HemisphereLight(0xffffff, 0xb8b0a4, 1.1);
+    demo.group.add(edges, sun, sky);
+    // outside the cube: the wall colour, not grey — if the picture spills over the outline (and on the back faces,
+    // which show the same clip from another angle) it continues as wall instead of a grey studio
+    const bg = content.background; content.background = new THREE.Color(STORY[P.scene].WALL);
+    plateR.setSize(w, h, false);
+    plateR.render(content, heroCamera(heroEye(), w / h));
+    const url = plateR.domElement.toDataURL('image/png');
+    content.background = bg; demo.group.remove(edges, sun, sky);
+    room.material.dispose(); room.material = flatWall; edges.geometry.dispose(); edges.material.dispose();
+    return url;
+  },
+  // the demo scene seen through the hero camera — stands in for an AI clip when checking the calibration
+  heroFrame: (t, w, h) => {
+    exporting = true; updateContent(t);
+    plateR.setSize(w, h, false);
+    plateR.render(content, heroCamera(heroEye(), w / h));
+    return plateR.domElement.toDataURL('image/jpeg', 0.93);
+  },
+};
+function frame(now) {
+  if (source === 'flat' && !exporting) {
+    const a = flat.video, b = back.video;
+    if (a && b && b.readyState >= 1 && Math.abs(b.currentTime - a.currentTime % b.duration) > 0.15) b.currentTime = a.currentTime % b.duration;
+    bakeFlat(); stripTex.needsUpdate = true;
+  }
+  if (source === 'demo' && !exporting) {
+    const t = freezeT !== null ? freezeT : recStart !== null ? ((now - recStart) / 1000) % loopLen() : (now / 1000) % loopLen();
+    bake(t);
+    stripTex.needsUpdate = true;
+  }
+
+  if (fly) {
+    const k = Math.min((now - fly.start) / 1200, 1), e = k * k * (3 - 2 * k);
+    camera.position.lerpVectors(fly.p0, fly.p1, e);
+    controls.target.lerpVectors(fly.t0, fly.t1, e);
+    camera.lookAt(controls.target);
+    if (k === 1) fly = null;
+  } else if (camMode === 'free') {
+    controls.update();
+    camera.position.y = Math.max(camera.position.y, 0.3); // stay above the ground
+  }
+
+  for (const m of markers.children) m.visible = camera.position.distanceTo(m.userData.eye) > 1;
+  let near = null, offset = Infinity;
+  for (const v of DEV ? VIEWPOINTS : VIEWPOINTS.slice(0, BACK_POINT + 1)) { const d = camera.position.distanceTo(v.eye); if (d < offset) { offset = d; near = v; } }
+  hud.textContent = offset < 0.1 ? `Точка «${near.label}» — иллюзия должна работать`
+    : `До ближайшей точки обзора: ${offset.toFixed(1)} м`;
+  mainR.render(scene, camera);
+  requestAnimationFrame(frame);
+}
+
+setNight(true);
+setEnv(P.env);
+rebuild();
+resetFreeCam();
+resize();
+setSource('demo');
+// a link can open the emulator with a video already loaded and a viewpoint chosen: ?video=videos/x.mp4&view=1
+const query = new URLSearchParams(location.search);
+if (DEV) $('dev').hidden = false;
+renderClipButtons();
+if (query.get('video')) loadVideo(query.get('video'));
+else if (!DEV) { playClip(0); setCamMode('view', 0); }
+if (query.get('back')) loadBackVideo(query.get('back'));
+if (query.get('view')) setCamMode('view', +query.get('view') - 1);
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
