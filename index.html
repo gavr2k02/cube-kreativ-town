@@ -11,6 +11,7 @@
   body { display:flex; overflow:hidden; }
   #view { flex:1; position:relative; min-width:0; }
   #view canvas { display:block; }
+  #loading { position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); padding:10px 16px; border-radius:8px; background:rgba(0,0,0,.6); font-size:14px; pointer-events:none; }
   #hud { position:absolute; left:12px; top:12px; padding:6px 10px; border-radius:6px; background:rgba(0,0,0,.55); font-size:12px; pointer-events:none; }
   #panel { width:340px; flex:none; background:var(--panel); border-left:1px solid var(--line); padding:14px 16px; overflow-y:auto; }
   h1 { font-size:15px; margin:0 0 12px; }
@@ -37,7 +38,7 @@
 </script>
 </head>
 <body>
-<div id="view"><div id="hud"></div></div>
+<div id="view"><div id="hud"></div><div id="loading" hidden></div></div>
 <aside id="panel">
   <h1>LED-куб · Креатив-Таун</h1>
 
@@ -892,6 +893,10 @@ const stripTex = new THREE.CanvasTexture(stripCanvas);
 stripTex.colorSpace = THREE.SRGBColorSpace;
 stripTex.anisotropy = 8;
 let videoTex = null, videoEl = null;
+// the screen switched off: shown while a clip is loading
+const offCanvas = Object.assign(document.createElement('canvas'), { width: 1, height: 1 });
+offCanvas.getContext('2d').fillRect(0, 0, 1, 1);
+const offTex = new THREE.CanvasTexture(offCanvas);
 const screenMat = new THREE.MeshBasicMaterial({ map: stripTex, toneMapped: false });
 
 const hemi = new THREE.HemisphereLight(0xbfd8ff, 0x3a4a2a, 1);
@@ -1024,7 +1029,7 @@ function renderClipButtons() {
   });
 }
 function playClip(i) {
-  loadVideo(CLIPS[i].src);
+  loadVideo(CLIPS[i].src, `«${CLIPS[i].label}»`);
   document.querySelectorAll('#clipBtns button').forEach(b => b.classList.toggle('on', +b.dataset.c === i));
 }
 function renderViewButtons() {
@@ -1083,7 +1088,8 @@ function setSource(s) {
   if (videoEl) s === 'video' ? videoEl.play().catch(() => {}) : videoEl.pause();
   for (const v of [flat.video, back.video]) if (v) s === 'flat' && !exporting ? v.play().catch(() => {}) : v.pause();
   if (s === 'pattern') drawPattern();
-  screenMat.map = s === 'video' ? videoTex : s === 'pattern' ? patternTex : stripTex;
+  screenMat.map = s === 'video' ? videoTex : s === 'pattern' ? patternTex : s === 'loading' ? offTex : stripTex;
+  $('loading').hidden = s !== 'loading';
   screenMat.needsUpdate = true;
   $('recBtn').disabled = !(s === 'demo' || s === 'flat') || recording;
 }
@@ -1107,19 +1113,30 @@ $('fileIn').onchange = e => {
   loadVideo(URL.createObjectURL(file));
 };
 let videoRequest = 0;
-function loadVideo(src) {
+function loadVideo(src, label = 'ролик') {
   const v = document.createElement('video'), req = ++videoRequest;
   Object.assign(v, { src, loop: true, muted: true, playsInline: true });
+  // until it can play, the screen is off and the view says what is loading (not some other picture)
+  setSource('loading');
+  $('loading').textContent = `Загружается ${label}…`;
+  v.addEventListener('progress', () => {
+    if (req !== videoRequest || !(v.duration > 0) || !v.buffered.length) return;
+    $('loading').textContent = `Загружается ${label}… ${Math.min(99, Math.round(v.buffered.end(v.buffered.length - 1) / v.duration * 100))}%`;
+  });
   v.onloadedmetadata = () => {
     // a big clip picked earlier may finish loading after a small one picked later: only the last pick counts
     if (req !== videoRequest) { dropVideo(v); return; }
     const ar = v.videoWidth / v.videoHeight;
     if (!flat.force && Math.abs(ar - faceCount()) < 0.3) {
-      // a ready strip: shown on the cube as it is
-      dropVideo(videoEl); videoTex?.dispose();
-      videoEl = v; videoTex = new THREE.VideoTexture(v); videoTex.colorSpace = THREE.SRGBColorSpace;
-      checkVideoAspect();
-      setSource('video');
+      // a ready strip: shown on the cube as it is, once enough of it has arrived to play
+      const show = () => {
+        if (req !== videoRequest) { dropVideo(v); return; }
+        dropVideo(videoEl); videoTex?.dispose();
+        videoEl = v; videoTex = new THREE.VideoTexture(v); videoTex.colorSpace = THREE.SRGBColorSpace;
+        checkVideoAspect();
+        setSource('video');
+      };
+      v.readyState >= 3 ? show() : v.addEventListener('canplay', show, { once: true });
     } else {
       // an ordinary video: projected with the hero camera (frames are copied into a canvas, so offline export can seek)
       dropVideo(flat.video);
