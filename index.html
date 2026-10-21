@@ -1012,7 +1012,7 @@ function highlightCamButtons() {
 // The finished clips (ready 3840×640 strips) the page shows
 const CLIPS = [
   { label: 'Тыква', src: 'videos/pumpkin.mp4' },
-  { label: 'Клавиатура (проба)', src: 'videos/keyboard.mp4' },   // the 480p draft; the final is not made yet
+  { label: 'Клавиатура', src: 'videos/keyboard.mp4' },
 ];
 function renderClipButtons() {
   const box = $('clipBtns'); box.innerHTML = '';
@@ -1245,6 +1245,8 @@ window.cubeExport = {
   twins: () => twinEyes().map(e => e.toArray()),   // eyes where the hero's picture also works
   lookFrom: (x, y, z) => { setCamMode('view'); flyTo(new THREE.Vector3(x, y, z), cubeCenter()); },
   forceFlat: on => { flat.force = on; },   // treat every loaded video as an ordinary one (convert.mjs)
+  // the ready strip shown on the cube: start it again from t (tools/film.mjs films from a known moment)
+  restart: t => new Promise(r => { if (!videoEl) return r(false); videoEl.addEventListener('seeked', () => { videoEl.play(); r(videoEl.currentTime); }, { once: true }); videoEl.currentTime = t; }),
   backVideo: src => loadBackVideo(src),
   rearMode: m => { P.rearMode = m; },   // what the back faces show without a back video: 'point' (default) or 'corner'
   plate: (w, h, wall) => renderPlate(w, h, wall ?? (STORY[P.scene] ? STORY[P.scene].WALL : 0xece6dd)),
