@@ -1106,10 +1106,13 @@ $('fileIn').onchange = e => {
   e.target.value = '';
   loadVideo(URL.createObjectURL(file));
 };
+let videoRequest = 0;
 function loadVideo(src) {
-  const v = document.createElement('video');
+  const v = document.createElement('video'), req = ++videoRequest;
   Object.assign(v, { src, loop: true, muted: true, playsInline: true });
   v.onloadedmetadata = () => {
+    // a big clip picked earlier may finish loading after a small one picked later: only the last pick counts
+    if (req !== videoRequest) { dropVideo(v); return; }
     const ar = v.videoWidth / v.videoHeight;
     if (!flat.force && Math.abs(ar - faceCount()) < 0.3) {
       // a ready strip: shown on the cube as it is
