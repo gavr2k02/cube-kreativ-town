@@ -965,19 +965,7 @@ function buildCube() {
     g.setIndex([0, 1, 2, 0, 2, 3]);
     cubeGroup.add(new THREE.Mesh(g, screenMat));
   });
-  // Metal frame on the 12 edges
-  const S = P.size, c = cubeCenter(), q = cubeQuat(), t = 0.04;
-  const frameMat = new THREE.MeshStandardMaterial({ color: 0x111111, metalness: 0.6, roughness: 0.4 });
-  const corner = k => new THREE.Vector3(...k.map(x => x * S / 2)).applyQuaternion(q).add(c);
-  for (const axis of [0, 1, 2]) for (const a of [-1, 1]) for (const b of [-1, 1]) {
-    const k0 = [0, 0, 0], others = [0, 1, 2].filter(k => k !== axis);
-    k0[others[0]] = a; k0[others[1]] = b;
-    const k1 = [...k0]; k0[axis] = -1; k1[axis] = 1;
-    const A = corner(k0), B = corner(k1);
-    const m = new THREE.Mesh(new THREE.BoxGeometry(t, t, S + t), frameMat);
-    m.position.copy(A).add(B).multiplyScalar(0.5); m.lookAt(B);
-    m.castShadow = true; cubeGroup.add(m);
-  }
+  // No frame on the edges: the real cube's seams are thin and light, a dark frame drew lines it doesn't have
   if (isVertex()) {
     // square base on the tiles and a post up to the lower vertex, as on the plaza
     const postMat = new THREE.MeshStandardMaterial({ color: 0x2a2d33, roughness: 0.7 });
@@ -988,7 +976,7 @@ function buildCube() {
     base.castShadow = post.castShadow = true;
     cubeGroup.add(base, post);
   } else if (P.plinth > 0) {
-    const plinth = new THREE.Mesh(new THREE.BoxGeometry(S * 0.9, P.plinth, S * 0.9),
+    const plinth = new THREE.Mesh(new THREE.BoxGeometry(P.size * 0.9, P.plinth, P.size * 0.9),
       new THREE.MeshStandardMaterial({ color: 0x2a2d33, roughness: 0.7 }));
     plinth.position.y = P.plinth / 2; plinth.castShadow = plinth.receiveShadow = true;
     cubeGroup.add(plinth);
@@ -1018,6 +1006,7 @@ function highlightCamButtons() {
 const CLIPS = [
   { label: 'Тыква', src: 'videos/pumpkin.mp4' },
   { label: 'Клавиатура', src: 'videos/keyboard.mp4' },
+  { label: 'Рыбки (их демо)', src: 'videos/fish.mp4' },
 ];
 function renderClipButtons() {
   const box = $('clipBtns'); box.innerHTML = '';

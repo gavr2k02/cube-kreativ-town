@@ -16,8 +16,9 @@ export const LAYOUT = {
   // edge 3.2 m ≈ 640 px per face at a 5 mm pixel pitch (the strip is 3840×640, six 640×640 faces);
   // yaw is derived below: the main face is turned towards the table on photo IMG_2089 and then by
   // yawOffset more, so that from that table one sees the edge between it and the upper face next to it — matched
-  // to photo IMG_2089 (big upper face top-left, main face bottom-right)
-  cube: { x: 0, z: 0, edge: 3.2, lift: 1.3, yaw: 0, yawOffset: 30, photoSpot: { x: -17, z: 3.5 } },
+  // to photo IMG_2089 (big upper face top-left, main face bottom-right). With the up-diagonal checked on the real
+  // cube the same solid (edges where the photo has them) comes out at yawOffset −90 (yaw −153).
+  cube: { x: 0, z: 0, edge: 3.2, lift: 1.3, yaw: 0, yawOffset: -90, photoSpot: { x: -17, z: 3.5 } },
   buildings: [
     { id: 'coffee', label: 'Кофейня', h: 4.5, warm: true, sign: 'П/ЛЕ  КОФЕЙНЯ',
       poly: [V(-22, -17), V(-8, -16.5), V(-4, -13), V(-13, -6), V(-22, -6)], front: [2, 3] },
@@ -55,10 +56,11 @@ export const LAYOUT = {
 };
 
 // ---------- cube orientation ----------
-// The cube stands on a vertex: this cube-local diagonal points straight up. It is chosen so that the first face of
-// the strip ("перед", local +z) is one of the three LOWER faces — the ones people at eye level see squarely, as a
-// diamond standing on its corner (as on the videos). Then the cube is turned about the vertical by `yaw`.
-export const CUBE_UP_DIAGONAL = new THREE.Vector3(1, 1, -1).normalize();
+// The cube stands on a vertex: this cube-local diagonal points straight up, so the strip's faces 0, 1, 5 are the
+// three LOWER ones and 2, 3, 4 the upper ones. Checked on the real cube (21.10.2026): a phone video of our clip from
+// the pavilion shows slot 5 on the lower face facing it and slot 3 on the upper face next to it, and the client's own
+// fish clip reads as a level water tank only with this diagonal. Then the cube is turned about the vertical by `yaw`.
+export const CUBE_UP_DIAGONAL = new THREE.Vector3(-1, 1, -1).normalize();
 export function cubeQuaternion(yawDeg) {
   return new THREE.Quaternion().setFromUnitVectors(CUBE_UP_DIAGONAL, new THREE.Vector3(0, 1, 0))
     .premultiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), deg(yawDeg)));
