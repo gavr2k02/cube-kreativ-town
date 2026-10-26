@@ -64,6 +64,11 @@
     <button id="night" class="on">Ночь</button>
     <button id="day">День</button>
   </div>
+  <h2>Экран</h2>
+  <div class="row">
+    <button id="ledClean" class="on">Чистый</button>
+    <button id="ledReal">Как настоящий</button>
+  </div>
 
   <!-- tools for making clips (plates, raw videos, test pattern); shown with ?dev, used by the scripts in tools/ -->
   <div id="dev" hidden>
@@ -76,6 +81,9 @@
     <button class="demoBtn" data-scene="pumpkin">Тыква</button>
     <button class="demoBtn" data-scene="keyboard">Клавиатура</button>
     <button class="demoBtn" data-scene="wave">Волна</button>
+    <button class="demoBtn" data-scene="gravity">Гравитация</button>
+    <button class="demoBtn" data-scene="dent">Вмятина</button>
+    <button class="demoBtn" data-scene="knock">Стук</button>
   </div>
   <p class="note" id="formatNote"></p>
   <div id="status" class="note"></div>
@@ -103,9 +111,12 @@ import { LAYOUT, buildPlaza, cubeQuaternion } from './plaza.js';
 import { STRIP, slotOf, faceToSlot } from './strip-layout.js';
 import * as pumpkinScene from './scenes/pumpkin.js';
 import * as keyboardScene from './scenes/keyboard.js';
+import * as gravityScene from './scenes/gravity.js';
+import * as dentScene from './scenes/dent.js';
+import * as knockScene from './scenes/knock.js';
 
 // Story scenes (the brief's screensavers) live in their own modules: build(group, ctx), update(state, t), LOOP, WALL
-const STORY = { pumpkin: pumpkinScene, keyboard: keyboardScene };
+const STORY = { pumpkin: pumpkinScene, keyboard: keyboardScene, gravity: gravityScene, dent: dentScene, knock: knockScene };
 const loopLen = () => STORY[P.scene]?.LOOP ?? P.loop;
 
 // ---------- parameters & geometry shared by bake and display ----------
@@ -717,7 +728,7 @@ function bakeFlatStrip() {
   const turns = symmetryTurns().map(m => ({ tex: flat.tex, eye: eye.clone().applyMatrix4(m), vp: vp.clone().multiply(m.clone().invert()) }));
   let rear = null, rearMin = REAR_MIN_FACING;
   if (back.video) {
-    const be = VIEWPOINTS[BACK_POINT].eye.clone(), bc = heroCamera(be, back.canvas.width / back.canvas.height);
+    const be = VIEWPOINTS[P.rearPoint ?? BACK_POINT].eye.clone(), bc = heroCamera(be, back.canvas.width / back.canvas.height);
     rear = { tex: back.tex, eye: be, vp: new THREE.Matrix4().multiplyMatrices(bc.projectionMatrix, bc.matrixWorldInverse) };
   } else if (isVertex()) {
     // No back video: the faces the hero cannot see show the same clip, taken by a virtual camera looking straight at
@@ -729,14 +740,23 @@ function bakeFlatStrip() {
     const dir = hidden.reduce((a, f) => a.add(f.n), new THREE.Vector3()).normalize();
     // By default (rearMode 'point') the real back point is used instead: someone standing there sees the whole scene
     // undistorted, as on the real cube's own clips; seen from the sides the upper back faces are stretched.
-    const ve = P.rearMode !== 'corner' ? VIEWPOINTS[BACK_POINT].eye.clone() : c.clone().addScaledVector(dir, eye.distanceTo(c));
+    const ve = P.rearMode !== 'corner' ? VIEWPOINTS[P.rearPoint ?? BACK_POINT].eye.clone() : c.clone().addScaledVector(dir, eye.distanceTo(c));
     const vc = heroCamera(ve, flat.canvas.width / flat.canvas.height);
     const rvp = new THREE.Matrix4().multiplyMatrices(vc.projectionMatrix, vc.matrixWorldInverse);
     // From behind the cube's outline is a different shape: its corners would reach past the picture (into the
     // clip's background and the outline drawn by the AI) — zoom in until the whole back outline stays inside it
-    const k = backZoom(cam, rvp);
+    const k = P.rearZoom ?? backZoom(cam, rvp);
     rear = { tex: flat.tex, eye: ve, vp: new THREE.Matrix4().makeScale(1 / k, 1 / k, 1).multiply(rvp) };
     rearMin = 0;
+  }
+  // Optionally each back face is projected for its own viewpoint (P.rearFaces = { face: viewpoint index }): nobody on
+  // the ground sees all three back faces at once (one lower, two upper), but from either side of the back the lower
+  // face and the upper face on that side line up into one picture
+  const rearOf = {};
+  if (!back.video && P.rearFaces) for (const [fi, vi] of Object.entries(P.rearFaces)) {
+    const e = VIEWPOINTS[vi].eye.clone(), fc2 = heroCamera(e, flat.canvas.width / flat.canvas.height);
+    const k2 = P.rearZoom ?? 1;
+    rearOf[fi] = { tex: flat.tex, eye: e, vp: new THREE.Matrix4().makeScale(1 / k2, 1 / k2, 1).multiply(new THREE.Matrix4().multiplyMatrices(fc2.projectionMatrix, fc2.matrixWorldInverse)) };
   }
   beginStrip();
   bakeMat.uniforms.uSolidEmpty.value = 1;
@@ -745,11 +765,15 @@ function bakeFlatStrip() {
     const fc = f.o.clone().addScaledVector(f.u, 0.5).addScaledVector(f.w, 0.5);
     const facing = s => f.n.dot(s.eye.clone().sub(fc).normalize());
     // the back point sees its lower face squarely but its two upper faces at a grazing angle: projected from there
-    // they would be stretched into streaks (very visible from the sides), so those take the hero's upper face
-    // turned by 120° — undistorted, and exact from the two side points
-    const best = facing(turns[0]) > HERO_MIN_FACING ? turns[0] : rear && facing(rear) > rearMin ? rear
+    // they would be stretched into streaks (very visible from the sides), so without a back video those take the
+    // hero's upper face turned by 120°. A back video is made for the back point, so it takes all three faces it
+    // sees: only then do they read as one picture from there (the streaks from the sides are the price). A clip that
+    // keeps its story on the lower face can ask for the hybrid instead (P.backMin ≈ 0.3): the grazing upper faces
+    // then take the turned hero picture, and nothing is stretched from the sides
+    let best = facing(turns[0]) > HERO_MIN_FACING ? turns[0] : rear && facing(rear) > (back.video ? P.backMin ?? 0 : rearMin) ? rear
       : turns.reduce((a, b) => (facing(b) > facing(a) ? b : a));
-    drawFace(i, 0, 1, best === rear || facing(best) > HERO_MIN_FACING ? best : null, NO_SEAM, 1);
+    if (best !== turns[0] && rearOf[i]) best = rearOf[i];
+    drawFace(i, 0, 1, best === rear || best === rearOf[i] || facing(best) > HERO_MIN_FACING ? best : null, NO_SEAM, 1);
   });
   endStrip();
 }
@@ -898,6 +922,28 @@ const offCanvas = Object.assign(document.createElement('canvas'), { width: 1, he
 offCanvas.getContext('2d').fillRect(0, 0, 1, 1);
 const offTex = new THREE.CanvasTexture(offCanvas);
 const screenMat = new THREE.MeshBasicMaterial({ map: stripTex, toneMapped: false });
+// "Real screen" (photos of the real cube): the LED modules are separated by dark gaps that read as ~44 stripes along
+// each face's rows, and by day the panels reflect the sky, so black turns grey and colours lose contrast
+const led = { uLed: { value: 0 }, uRows: { value: 44 }, uDuty: { value: 0.32 }, uGap: { value: 0.5 },
+  uWash: { value: new THREE.Color(0, 0, 0) }, uGain: { value: 1 } };
+screenMat.onBeforeCompile = sh => {
+  Object.assign(sh.uniforms, led);
+  sh.vertexShader = sh.vertexShader.replace('void main() {', 'attribute vec2 faceUv;\nvarying vec2 vFaceUv;\nvoid main() {\nvFaceUv = faceUv;');
+  sh.fragmentShader = sh.fragmentShader.replace('void main() {',
+    'uniform float uLed, uRows, uDuty, uGap, uGain;\nuniform vec3 uWash;\nvarying vec2 vFaceUv;\nvoid main() {')
+    .replace('#include <map_fragment>', `#include <map_fragment>
+    if (uLed > 0.5) {
+      float y = vFaceUv.y * uRows, k = fract(y), w = max(fwidth(y), 1e-4);
+      // a gap at the end of every row, softened by the pixel footprint so far rows blend instead of aliasing
+      float g = clamp((k - (1.0 - uDuty)) / w, 0.0, 1.0) * clamp((1.0 - k) / w + 0.5, 0.0, 1.0);
+      diffuseColor.rgb *= mix(1.0, uGap, mix(g, uDuty, clamp((w - 0.8) * 2.5, 0.0, 1.0)));
+      diffuseColor.rgb = diffuseColor.rgb * uGain + uWash;
+    }`);
+};
+function setLed(on) {
+  led.uLed.value = on ? 1 : 0;
+  $('ledReal').classList.toggle('on', on); $('ledClean').classList.toggle('on', !on);
+}
 
 const hemi = new THREE.HemisphereLight(0xbfd8ff, 0x3a4a2a, 1);
 const sun = new THREE.DirectionalLight(0xffffff, 2);
@@ -962,6 +1008,9 @@ function buildCube() {
     const n = faceCount(), s = slotOf(i);
     g.setAttribute('uv', new THREE.Float32BufferAttribute([[0, 0], [1, 0], [1, 1], [0, 1]]
       .flatMap(([cu, cv]) => { const [a, b] = faceToSlot(i, cu, cv); return [(s + a) / n, b]; }), 2));
+    // the face's own picture coordinates in the strip slot: LED rows run along the slot's rows
+    g.setAttribute('faceUv', new THREE.Float32BufferAttribute([[0, 0], [1, 0], [1, 1], [0, 1]]
+      .flatMap(([cu, cv]) => faceToSlot(i, cu, cv)), 2));
     g.setIndex([0, 1, 2, 0, 2, 3]);
     cubeGroup.add(new THREE.Mesh(g, screenMat));
   });
@@ -994,6 +1043,8 @@ function setNight(night) {
   sun.intensity = night ? 0.15 : 2.5;
   sun.color.set(night ? 0x8fa8ff : 0xffffff);
   spill.intensity = night ? 6 : 0;
+  // by day the panels reflect the sky (only with the real screen on): blacks lift to grey, contrast drops
+  led.uWash.value.set(night ? 0x000000 : 0x3a3f47); led.uGain.value = night ? 1 : 0.82;
 }
 
 // ---------- camera: free, or standing at one of the viewpoints ----------
@@ -1006,6 +1057,9 @@ function highlightCamButtons() {
 const CLIPS = [
   { label: 'Тыква', src: 'videos/pumpkin.mp4' },
   { label: 'Клавиатура', src: 'videos/keyboard.mp4' },
+  { label: 'Гравитация', src: 'videos/gravity.mp4' },
+  { label: 'Вмятина', src: 'videos/dent.mp4' },
+  { label: 'Ёлки', src: 'videos/trees.mp4' },
   { label: 'Рыбки (их демо)', src: 'videos/fish.mp4' },
 ];
 function renderClipButtons() {
@@ -1055,6 +1109,8 @@ $('camFree').onclick = () => setCamMode('free');
 $('envPlaza').onclick = () => setEnv('plaza');
 $('envEmpty').onclick = () => setEnv('empty');
 $('night').onclick = () => setNight(true);
+$('ledClean').onclick = () => setLed(false);
+$('ledReal').onclick = () => setLed(true);
 $('day').onclick = () => setNight(false);
 
 // ---------- sources ----------
@@ -1258,6 +1314,10 @@ window.cubeExport = {
   restart: t => new Promise(r => { if (!videoEl) return r(false); videoEl.addEventListener('seeked', () => { videoEl.play(); r(videoEl.currentTime); }, { once: true }); videoEl.currentTime = t; }),
   backVideo: src => loadBackVideo(src),
   rearMode: m => { P.rearMode = m; },   // what the back faces show without a back video: 'point' (default) or 'corner'
+  backMin: v => { P.backMin = v; },
+  rearPoint: i => { P.rearPoint = i; },
+  rearZoom: k => { P.rearZoom = k; },
+  rearFaces: m => { P.rearFaces = m; },  // { back face: viewpoint index } — each back face made for its own viewpoint     // override the automatic zoom of the back projection (1 = none)  // which viewpoint the back faces are made for (default: «Сзади, у павильона»)     // with a back video: the least facing from the back point that still takes it
   plate: (w, h, wall) => renderPlate(w, h, wall ?? (STORY[P.scene] ? STORY[P.scene].WALL : 0xece6dd)),
   pattern: () => { setSource('pattern'); return patternCanvas.toDataURL('image/png'); },
   // the cube's edges as the hero sees them, in pixels of a w×h picture: [[x1, y1, x2, y2], …] — where an AI video
@@ -1367,6 +1427,9 @@ if (query.get('video')) loadVideo(query.get('video'));
 else if (!DEV) { playClip(0); setCamMode('view', 0); }
 if (query.get('back')) loadBackVideo(query.get('back'));
 if (query.get('view')) setCamMode('view', +query.get('view') - 1);
+// ?day / ?led: daylight and the real screen's look, for films of how a clip will read on the plaza
+if (query.has('day')) setNight(false);
+if (query.has('led')) setLed(true);
 requestAnimationFrame(frame);
 </script>
 </body>

@@ -52,6 +52,11 @@ export const LAYOUT = {
     { label: 'Сзади, у павильона', x: 8.6, z: 2.8 },
     { label: 'Южный проход (сбоку)', x: 2.5, z: 11.7 },   // closer than the others: further south «Укрытие» blocks the view
     { label: 'У R-CUTS (сбоку)', x: 12.9, z: -11.6 },
+    { label: 'Сзади, как на видео с площади', x: 10, z: -2.5 },   // where the client's phone videos were shot: faces 5 + 3 large
+    // not a place to stand: above the pavilion point, from where all three back faces (2, 3, 5) are seen well; the
+    // main clip projected from here wraps the whole back triple, upright, like the client's own clips
+    { label: 'Сзади, сверху (проекция на три грани)', x: 8.6, z: 2.8, y: 6 },
+    { label: 'Сзади, с другой стороны', x: 5.6, z: 9.2 },   // mirror of the video spot across the back diagonal: faces 5 + 2
   ],
 };
 
